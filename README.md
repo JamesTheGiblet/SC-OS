@@ -149,9 +149,6 @@ Over idle time weight decays and value slides back toward +1 at the same rate.
   The listener accepts one connection, ever, and ignores the `peer` argument.
 - **`recv` trusts the sender's own label.** It returns the envelope's self-declared `pubkey_id`,
   and nothing checks that against the capsule's `from`.
-- **Handshake sends a Python set repr.** `make_hello` writes `vocab_version={'1.0'}`
-  instead of `vocab_version=1.0`, and `negotiate` never compares vocab versions.
-  Version choice sorts strings, so `"10.0"` would lose to `"9.0"`.
 - **Edge downgrade emits an invalid message.** `to_edge_wire` writes `tr: "none"` for
   untriggered capsules, but `sc_edge.json` doesn't allow `none`. Nothing validates edge
   messages, so it passes silently. It also drops the sender.

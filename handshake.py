@@ -24,7 +24,7 @@ def make_hello(sender: str, receiver: str) -> Capsule:
                     confidence=1.0,
                     evidence=(
                         f"capsule_versions={','.join(sorted(SUPPORTED_VERSIONS))}",
-                        f"vocab_version={SUPPORTED_VOCAB_VERSION}",
+                        f"vocab_versions={','.join(sorted(SUPPORTED_VOCAB_VERSION))}",
                         f"predicates={','.join(sorted(SUPPORTED_PREDICATES))}",
                     ),
                 ),
@@ -43,16 +43,24 @@ def _extract(c: Capsule, prefix: str) -> set[str]:
     return set()
 
 
+def _version_key(v: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in v.split("."))
+
+
 def negotiate(local: Capsule, remote: Capsule) -> dict:
     shared_versions = _extract(local, "capsule_versions=") & _extract(remote, "capsule_versions=")
+    shared_vocab = _extract(local, "vocab_versions=") & _extract(remote, "vocab_versions=")
     shared_predicates = _extract(local, "predicates=") & _extract(remote, "predicates=")
 
     if not shared_versions:
         raise RuntimeError("no shared capsule version")
+    if not shared_vocab:
+        raise RuntimeError("no shared vocab version")
     if not shared_predicates:
         raise RuntimeError("no shared vocabulary")
 
     return {
-        "capsule_version": sorted(shared_versions)[-1],
+        "capsule_version": max(shared_versions, key=_version_key),
+        "vocab_version": max(shared_vocab, key=_version_key),
         "predicates": shared_predicates,
     }

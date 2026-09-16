@@ -7,6 +7,12 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
 ### Added
 - `README.md` and this changelog.
 
+### Fixed
+- **Handshake vocab version.** `make_hello` sent Python's set repr (`vocab_version={'1.0'}`).
+  It now sends `vocab_versions=1.0`, matching `capsule_versions`. `negotiate` compares
+  vocab versions, raises `no shared vocab version` on mismatch, and returns `vocab_version`.
+- **Version choice compares numbers, not strings.** `10.0` now beats `9.0`.
+
 ## [v0.1] — 2026-09-16
 
 First tagged state. Single-process kernel; the interface is frozen until the
