@@ -5,10 +5,37 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
 ## [Unreleased]
 
 Since v0.1: several nodes over TCP, identity, replay protection, a SQLite ledger,
-self-description capsules, and fixes for bugs that only showed up across a process boundary.
+self-description capsules, rules that learn from outcomes, and fixes for bugs that only showed up
+across a process boundary.
 
 ### Added
 
+- **Rules as capsules that learn** (`rules/`). A rule is a signed capsule on topic `rule.<name>`
+  whose directive claim holds a JSON spec: a `when` pattern (topic, from/to globs, intent, trigger,
+  claim type, minimum confidence, predicate) and capsules to emit `then`, with placeholders.
+  - **Firing:** outputs carry `provenance.method = "rule"` and `derived_from = [rule, input]`.
+    A rule fires at most once per input, never on its own node's capsules or another rule's output
+    (no loops), and not once its value is 0 or below.
+  - **Own rules only:** a node runs only rules it signed; peers' rules are stored, not executed.
+    Tampered or forged rules fail the signature check and are skipped. `adopt()` re-issues a
+    peer's rule as the node's own, starting at unknown.
+  - **Learning:** a `task_result` outcome for a rule's output moves the rule's opinion, if it
+    answers a task this node sent, comes from the agent it was sent to, and wasn't counted before.
+  - **Lifetime tied to Leighton Weight:** `maintain()` re-issues live rules before their 7-day
+    TTL ends. Tested rules are forgotten when decayed weight falls below 0.05, untested ones after
+    30 days. Forgotten rules stay forgotten unless issued with `--force`. Editing a rule makes a new
+    rule that derives from the old one and starts at unknown.
+  - `rules/builtin.json`: verify-high-confidence-risk, cool-hot-sensor, escalate-stuck,
+    question-contradiction. `python -m rules list|issue|maintain --node <name>`.
+  - `run_alice.py` issues the built-in rules at start and maintains them hourly; `run_bob.py`
+    carries out a rule's task and reports `--outcome success|failure|ignore`.
+  - Verified across processes: Bob success (+1.10, weight 1), Carol failure (+0.90, weight 4),
+    Bob success (+1.00, weight 5); an ignored task changed nothing; trust persisted across restarts.
+- **Outcome field.** `task_result` capsules carry `outcome: {status: success|failure, detail}` and
+  must derive from the task they report on; no other capsule may carry an outcome. The field is
+  omitted when absent, so existing capsules keep their digests. `Outcome` in `primitive.py`.
+- **Local belief in the node database:** `opinions` table (`Store.get_opinion`, `put_opinion`,
+  `opinions`) and `counted_outcomes` (`Store.mark_outcome_counted`). `Store.find(topic_prefix=)`.
 - **Multi-node sessions.** `run_alice.py` serves concurrent peers over TCP, one thread per
   connection, sharing one node and one scheduler, and routes replies by `to` to that agent's
   open session. `--sessions N` exits after N sessions. `run_bob.py` connects as any
@@ -50,13 +77,20 @@ self-description capsules, and fixes for bugs that only showed up across a proce
 - **`python -m store import <jsonl> <db>`** migrates pre-SQLite ledgers, keeping stored times and
   signatures, so migrated history still blocks replays.
 - **Tests with asserts.** `tests/test_store.py` (15), `tests/test_transport.py` (9, real localhost
-  TCP), `tests/test_peer.py` (17), `tests/test_self_describe.py` (6). `tests/test_weight.py`
-  asserts the sharing rule.
+  TCP), `tests/test_peer.py` (17), `tests/test_rules.py` (19), `tests/test_self_describe.py` (6).
+  `tests/test_weight.py` asserts the sharing rule.
 - `README.md` (with a "why capsules" section), this changelog, and rewritten `NOTES.md`
   recording design decisions and open questions.
 
 ### Changed
 
+- **The scheduler learns only from verified outcomes.** `_handle_task_result` finds the task a
+  `task_result` answers; if this node didn't send it to the reporting agent, it replies REFUSE
+  `unknown_task`. Otherwise the outcome, counted once per task, updates the topic opinion and the
+  rule that asked for the task. `Scheduler(..., rules=RuleEngine)` fires rules on every dispatched
+  capsule; `Scheduler.learned` lists what each outcome changed.
+- **Schema:** provenance method `rule` (needs ≥ 2 parents); `outcome` object; coherence checks for
+  `task_result`. Store schema version 2 (new tables are created in existing databases).
 - **Capsule storage moved to SQLite.** Same `Store` API, one database file per node
   (`store/<name>.db`, WAL mode). Each capsule is a row: JSON body, unique digest, stored time,
   signature columns, and indexed `capsule_id`, `sender`, `receiver`, `topic`, `intent`,
@@ -118,15 +152,18 @@ self-description capsules, and fixes for bugs that only showed up across a proce
 - The ledger proves who said what on its own, and lookups stay fast as it grows.
 - SC-OS describes its own code, tests, decisions and limits in its own format, generated from the
   source so the description can't drift, with every test file passing when last described.
+- Rules are behavior as signed capsules: their outputs explain themselves, and their trust moves
+  only on outcomes reported by the agent that did the work, counted once.
 
 ### The bad
 
 - Only ever run on one machine, in a star; no relaying, no queue for offline agents.
-- `record_outcome` still has no real caller, so opinions don't move from real traffic.
 - Trust on first use trusts whoever arrives first; no registry, no key rotation.
 - SQLite files are ~1.3× the old JSON Lines size, and nothing prunes on a schedule.
 - Validator, interpreter, merge and scheduler still have no asserting tests.
 - The self-description isn't shared with peers, expires after 7 days, and nothing reruns it.
+- A reported outcome is the worker's word; nothing checks it's true.
+- Topic opinions still live in memory; rules don't chain.
 
 ### The ugly
 
@@ -138,6 +175,8 @@ self-description capsules, and fixes for bugs that only showed up across a proce
   that capsule silently vanishes or reports zero items.
 - `demo.py` crashes with `UnicodeEncodeError` on `→` when stdout is cp1252 (Git Bash pipes on
   Windows). PowerShell and file redirection are fine.
+- Edge devices can't report outcomes: an edge `task_result` has no outcome field and is refused.
+- Rule trust exists only in the node's database; lose the file and every rule starts over.
 
 ## [v0.1] — 2026-09-16
 

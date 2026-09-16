@@ -22,7 +22,8 @@
     "semantics": { "$ref": "#/$defs/semantics" },
     "provenance": { "$ref": "#/$defs/provenance" },
     "action_hints": { "$ref": "#/$defs/actionHints" },
-    "epistemic": { "$ref": "#/$defs/epistemic" }
+    "epistemic": { "$ref": "#/$defs/epistemic" },
+    "outcome": { "$ref": "#/$defs/outcome" }
   },
   "$defs": {
     "agentId": { "type": "string", "pattern": "^agent://[a-zA-Z0-9._-]+$" },
@@ -78,7 +79,7 @@
           "type": "array",
           "items": { "type": "string", "pattern": "^urn:uuid:" }
         },
-        "method": { "type": "string", "enum": ["synthesis", "merge", "relay", "observation", "reply"] },
+        "method": { "type": "string", "enum": ["synthesis", "merge", "relay", "observation", "reply", "rule"] },
         "signature": { "type": ["string", "null"] }
       }
     },
@@ -89,6 +90,15 @@
         "priority":     { "type": "string", "enum": ["low", "normal", "high"] },
         "ttl_seconds":  { "type": "integer", "minimum": 1, "maximum": 604800 },
         "requires_ack": { "type": "boolean" }
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "required": ["status"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "type": "string", "enum": ["success", "failure"] },
+        "detail": { "type": "string", "maxLength": 2000 }
       }
     },
     "epistemic": {

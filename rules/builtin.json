@@ -1,0 +1,50 @@
+[
+  {
+    "name": "verify-high-confidence-risk",
+    "description": "A peer reports a high-confidence risk past a threshold: ask that peer to verify it before anything acts on it.",
+    "when": { "topic": "*_risk", "trigger": "threshold", "min_confidence": 0.8 },
+    "then": [
+      {
+        "intent": "request", "to": "{from}", "trigger": "task", "topic": "{topic}",
+        "claims": [{ "type": "directive", "statement": "verify: {claim}", "confidence": 1.0 }],
+        "ttl_seconds": 3600, "priority": "high", "requires_ack": true
+      }
+    ]
+  },
+  {
+    "name": "cool-hot-sensor",
+    "description": "A temperature reading crossed its threshold with reasonable confidence: ask the cooler to act.",
+    "when": { "topic": "temp", "trigger": "threshold", "min_confidence": 0.7 },
+    "then": [
+      {
+        "intent": "request", "to": "agent://cooler", "trigger": "task", "topic": "cooling",
+        "claims": [{ "type": "directive", "statement": "reduce temperature: {claim} (reported by {from})", "confidence": 1.0 }],
+        "ttl_seconds": 900, "priority": "high"
+      }
+    ]
+  },
+  {
+    "name": "escalate-stuck",
+    "description": "An agent says it is stuck: hand the problem to an operator.",
+    "when": { "trigger": "stuck" },
+    "then": [
+      {
+        "intent": "request", "to": "agent://operator", "trigger": "task", "topic": "escalation",
+        "claims": [{ "type": "directive", "statement": "{from} is stuck on {topic}: {claim}", "confidence": 1.0 }],
+        "ttl_seconds": 3600, "priority": "high", "requires_ack": true
+      }
+    ]
+  },
+  {
+    "name": "question-contradiction",
+    "description": "A capsule relates claims with 'contradicts': ask the sender which claim holds.",
+    "when": { "predicate": "contradicts" },
+    "then": [
+      {
+        "intent": "query", "to": "{from}", "trigger": "none", "topic": "{topic}",
+        "claims": [{ "type": "inference", "statement": "you reported a contradiction on {topic}; which claim holds?", "confidence": 0.5 }],
+        "ttl_seconds": 3600
+      }
+    ]
+  }
+]

@@ -75,6 +75,20 @@ class Epistemic:
     last_tested: datetime | None = None
 
 @dataclass(frozen=True)
+class Outcome:
+    """What happened when a task was carried out. Only on task_result capsules."""
+    status: str            # "success" | "failure"
+    detail: str = ""
+
+    def __post_init__(self):
+        if self.status not in ("success", "failure"):
+            raise ValueError("outcome status must be success or failure")
+
+    @property
+    def success(self) -> bool:
+        return self.status == "success"
+
+@dataclass(frozen=True)
 class Capsule:
     id: str
     created: datetime
@@ -87,3 +101,4 @@ class Capsule:
     action_hints: ActionHints = field(default_factory=ActionHints)
     epistemic: Epistemic = field(default_factory=Epistemic)
     capsule_version: str = "1.0"
+    outcome: Outcome | None = None

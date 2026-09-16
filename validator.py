@@ -60,6 +60,18 @@ def validate(d: dict, *, now: datetime | None = None) -> None:
         if vu and datetime.fromisoformat(vu) < now:
             raise CapsuleRejected("stale", f"claim expired: {c['statement'][:40]}")
 
-    if d.get("provenance", {}).get("method") == "merge":
-        if len(d["provenance"].get("derived_from", [])) < 2:
+    provenance = d.get("provenance", {})
+    if provenance.get("method") == "merge":
+        if len(provenance.get("derived_from", [])) < 2:
             raise CapsuleRejected("provenance", "merge requires >=2 parents")
+    if provenance.get("method") == "rule":
+        if len(provenance.get("derived_from", [])) < 2:
+            raise CapsuleRejected("provenance", "rule output requires the rule and its input as parents")
+
+    if trigger == "task_result":
+        if "outcome" not in d:
+            raise CapsuleRejected("coherence", "task_result has no outcome")
+        if not provenance.get("derived_from"):
+            raise CapsuleRejected("coherence", "task_result must derive from the task it reports on")
+    elif "outcome" in d:
+        raise CapsuleRejected("coherence", "outcome is only allowed on task_result")

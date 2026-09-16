@@ -5,9 +5,10 @@ A capsule carries claims with confidence, relations between entities, what the s
 doesn't know, where the claim came from, and how urgently to act on it.
 The "OS" is the kernel that routes capsules between agents; the capsule protocol is the core.
 
-**Status: v0.1 plus multi-node sessions and self-description.** A server node handles several
-peers at once over TCP, with signed capsules, pinned keys, replay protection and a SQLite ledger.
-SC-OS also records its own code, docs and test results as capsules. Tested with three nodes on
+**Status: v0.1 plus multi-node sessions, self-description and learning rules.** A server node
+handles several peers at once over TCP, with signed capsules, pinned keys, replay protection and a
+SQLite ledger. Rules are capsules too: they fire on incoming capsules and gain or lose trust from
+reported outcomes. SC-OS also records its own code, docs and test results as capsules. Tested with three nodes on
 one machine; it hasn't crossed two machines yet.
 Read [the good, the bad, and the ugly](#the-good-the-bad-and-the-ugly) before building on it.
 
@@ -66,6 +67,49 @@ only its capsule gets a new version, with `derived_from` pointing at the one it 
 cites file, line and file hash. Capsules live 7 days (the schema maximum): self-knowledge that
 isn't refreshed expires. `--no-tests` leaves earlier test results alone.
 
+### Rules that learn
+
+```sh
+python -m rules list     --node alice                      # rules, trust, whether each fires
+python -m rules issue    --node alice rules/builtin.json   # sign and store rules (--force revives forgotten ones)
+python -m rules maintain --node alice                      # forget faded rules, re-issue live ones
+```
+
+A rule is a capsule on topic `rule.<name>`, signed by the node that runs it. Its directive claim
+holds a JSON spec: a `when` pattern over incoming capsules and the capsules to emit `then`.
+
+```json
+{
+  "name": "verify-high-confidence-risk",
+  "when": { "topic": "*_risk", "trigger": "threshold", "min_confidence": 0.8 },
+  "then": [{ "intent": "request", "to": "{from}", "trigger": "task", "topic": "{topic}",
+             "claims": [{ "type": "directive", "statement": "verify: {claim}" }] }]
+}
+```
+
+- **Patterns** match on `topic` and `from`/`to` (globs), `intent`, `trigger`, `claim_type`,
+  `min_confidence` and relation `predicate`. Placeholders in outputs: `{from}` `{to}` `{topic}`
+  `{id}` `{claim}` `{confidence}` `{rule}`.
+- **Outputs explain themselves.** Every emitted capsule has `provenance.method = "rule"` and
+  `derived_from = [rule id, input id]`. A rule fires at most once per input, never on its own
+  node's capsules, and never on another rule's output, so rules can't loop.
+- **Only a node's own rules run.** A rule capsule from a peer is stored, never executed.
+  `RuleEngine.adopt()` re-issues it as the node's own, starting at unknown. A tampered or
+  forged rule in the ledger fails its signature check and is skipped.
+- **Rules learn from outcomes.** When a rule asks an agent for a task, that agent answers with a
+  `task_result` carrying `outcome: {status: success|failure}`. The outcome counts only if it
+  answers a task this node sent, comes from the agent it was sent to, and hasn't been counted
+  before. It moves the rule's opinion (+0.1 and weight 1 for success, −0.2 and weight 3 for
+  failure). A rule whose value falls to 0 or below stops firing.
+- **A rule lives as long as its trust.** `maintain()` re-issues live rules before their 7-day
+  capsule TTL runs out. A tested rule is forgotten once its decayed weight falls below 0.05; an
+  untested rule gets 30 days. Forgotten rules stay forgotten across restarts unless issued with
+  `--force`. Editing a rule makes a new rule (new id, `derived_from` the old one) that starts at unknown.
+
+`run_alice.py` issues `rules/builtin.json` at start and maintains rules hourly.
+`run_bob.py` carries out a task a rule asks for and reports `--outcome success|failure|ignore`.
+Trust lives in the node's database (`opinions` table), never in the rule capsule and never on the wire.
+
 ### Multiple nodes: Alice, Bob, Carol
 
 Alice first, then any number of clients, each in its own terminal:
@@ -75,6 +119,7 @@ python run_alice.py                           # serves many peers on 127.0.0.1:7
 python run_bob.py                             # agent://bob: hello, capsule, wait for ACK
 python run_bob.py --name carol --hold 2       # agent://carol, waits 2 s so sessions overlap
 python run_bob.py --name carol --replay       # then resends the same signed capsule; Alice must reject it
+python run_bob.py --outcome failure           # report failure for the task Alice's rule asks for
 ```
 
 All accept `--host` and `--port`. `run_alice.py --sessions N` exits after N sessions end.
@@ -85,6 +130,8 @@ Clients retry the connection for 10 seconds. A session goes:
 3. Bob sends a signed capsule. Alice verifies, validates and replay-checks it, then runs it
    through the scheduler.
 4. Alice sends a signed ACK that points back to Bob's capsule. Bob verifies it.
+5. If one of Alice's rules fires, she also sends Bob a task. Bob carries it out and returns a
+   `task_result` with an outcome, which Alice's rule learns from.
 
 Every connection starts with exactly one hello in each direction. That's deliberate: a peer
 may have upgraded its versions since it last connected, and the hello is where its key is checked
@@ -99,7 +146,7 @@ sending, verifying and dispatch, not just network time.
 
 | Path | Contents | In git |
 | --- | --- | --- |
-| `store/<name>.db` | SQLite ledger: every capsule sent or received, with signatures | no |
+| `store/<name>.db` | SQLite ledger: every capsule sent or received, with signatures; plus the node's opinions (rule trust) and counted outcomes | no |
 | `store/<name>.pins.json` | Agent id → pinned public key. Delete to forget a peer. | no |
 | `keys/<name>.ed25519` | The node's private key | no |
 | `store/self.db`, `keys/sc-os.ed25519` | SC-OS's self-description and the key that signs it | no |
@@ -122,6 +169,9 @@ sqlite3 store/alice.db "SELECT json_extract(capsule, '$.semantics.claims[0].stat
   (`key for agent://bob changed since first contact`). Deleted pins lead to a fresh first contact.
 - **Three nodes:** Bob and Carol's sessions overlapped, and each got the ACK for its own capsule.
   Carol was pinned on first contact while Bob matched his pin.
+- **Learning rules:** Alice's `verify-high-confidence-risk` rule asked Bob and Carol to verify
+  their reports. Bob reported success (value +1.10, weight 1), Carol failure (+0.90, weight 4), Bob
+  success again (+1.00, weight 5). An ignored task taught nothing. Trust persisted across restarts.
 - **Replay:** Carol resent a byte-identical signed capsule, and Alice rejected it
   (`replay: capsule … was already received`) and closed that session. A capsule Bob sent before
   the SQLite migration was also rejected when replayed against the migrated ledger.
@@ -132,6 +182,7 @@ sqlite3 store/alice.db "SELECT json_extract(capsule, '$.semantics.claims[0].stat
 python tests/test_store.py          # 15: round-trip, signatures, find, pruning and disk space, import, concurrent writers
 python tests/test_transport.py      # 9:  framing, many peers at once, concurrent sends (real localhost TCP)
 python tests/test_peer.py           # 17: pinning, rejections, replay, session binding, concurrent sessions
+python tests/test_rules.py          # 19: patterns, firing and provenance, own rules only, outcomes, lifetime
 python tests/test_self_describe.py  # 6:  valid capsules, every file described, versions chain, rerun stores nothing
 ```
 
@@ -169,6 +220,9 @@ Wire form (as produced by `interpreter.to_wire`, validated by `sc.schema.json`):
 }
 ```
 
+A `task_result` capsule also carries `"outcome": {"status": "success" | "failure", "detail": "…"}`
+and must derive from the task it reports on. No other capsule may carry an outcome.
+
 On the wire it travels inside an envelope: `{capsule, sig, alg: "ed25519", pubkey_id}`.
 
 Vocabulary (`vocab.json`, `sc.schema.json`):
@@ -177,7 +231,7 @@ Vocabulary (`vocab.json`, `sc.schema.json`):
 - **Triggers:** none, task, task_result, threshold, stuck, heartbeat, announce
 - **Claim types:** observation, inference, assumption, directive
 - **Predicates:** affects, causes, depends_on, contradicts, supports
-- **Provenance methods:** synthesis, merge, relay, observation, reply
+- **Provenance methods:** synthesis, merge, relay, observation, reply, rule
 
 ## How it fits together
 
@@ -195,8 +249,10 @@ Capsule ─to_wire─► dict ─sign─► envelope ──TCP──► Peer.rec
                                             store signed in ledger
                                                     │
                                             Scheduler.dispatch ─► route by trigger / agent
+                                                    │           task_result: outcome ─► rule trust
+                                                    ├─► RuleEngine.evaluate ─► rule outputs
                                                     │
-                                            replies ─► Peer.send to that agent's open session
+                                            replies + rule outputs ─► Peer.send to that agent's session
 ```
 
 | File | Role |
@@ -208,7 +264,8 @@ Capsule ─to_wire─► dict ─sign─► envelope ──TCP──► Peer.rec
 | `store.py` | SQLite ledger keyed by digest, indexed sender/receiver/topic/expiry, `find()` on those columns; `python -m store <db>` dumps it, `python -m store import <jsonl> <db>` migrates old ledgers |
 | `self_describe.py` | Reads the code, docs and test results into signed `self.*` capsules in `store/self.db` |
 | `peer.py` | `Node` (key, pins, ledger, lock) and `Peer` (one session): trust-on-first-use pins, verify, validate, replay check, store signed |
-| `scheduler.py` | Kernel: stores in and out, routes by trigger, `record_outcome` feeds opinions |
+| `scheduler.py` | Kernel: stores in and out, routes by trigger, fires rules, turns verified task outcomes into opinions |
+| `rules/` | `engine.py` (issue, load, fire, learn, maintain), `pattern.py` (`when` matching), `builtin.json` (starter rules), `python -m rules` |
 | `weight.py` | Leighton Weight: exponential decay, `Opinion` (value + weight), `blend` |
 | `handshake.py` | Hello capsule, version and predicate negotiation |
 | `run_alice.py`, `run_bob.py` | Multi-peer server; client that runs as any `--name` |
@@ -269,6 +326,11 @@ your own evidence count and decay clock. Never store it as your opinion.
   idle time returns it to unknown.
 - **Edge round-trip.** A stripped ESP32 message upgrades to a full capsule and
   downgrades back to the identical stripped form.
+- **Rules learn from what happens.** Rules are signed capsules; only a node's own rules run.
+  Their outputs cite the rule and the input. Reported outcomes move each rule's trust, a rule with
+  no trust left stops firing, and a rule whose trust fades is forgotten. Tested across processes
+  and from the attacker's side: forged and tampered rules, outcomes from the wrong agent,
+  duplicate reports.
 - **The system knows what it's made of.** `self_describe.py` turns every Python file, test,
   design decision, open question and known limit into signed capsules that pass the same
   validation as any other. Test results come from actually running the tests. Because ids follow
@@ -295,14 +357,19 @@ your own evidence count and decay clock. Never store it as your opinion.
   a schedule yet. Pins are still a JSON file per node, which two processes must not share.
 - **Signing lives outside the kernel.** `Peer` signs and stores signed records. `demo.py` and
   `Scheduler` used alone still store unsigned replies.
-- **Outcomes have nowhere to come from.** `record_outcome` is only called by the demo.
-  Capsules have no field for task success or failure, so opinions never move from real traffic.
+- **An outcome is the worker's word.** A rule learns from what the agent asked to do the task
+  reports. Alice checks that the report comes from that agent and counts it once, but can't check
+  that it's true: an agent that always reports success makes a bad rule look good.
+- **Topic opinions aren't saved.** Rule trust is stored in the database; the scheduler's per-topic
+  opinions live in memory and reset when the node restarts.
+- **Rules don't chain.** A rule never fires on another rule's output. That prevents loops, but
+  multi-step reasoning needs a person or agent in between.
 - **Hints aren't wired in.** Nothing fills a capsule's `epistemic` block from the sender's
   opinion, and the scheduler never calls `blend`.
-- **Stubs.** `_escalate`, `_handle_task_result` and `_handle_threshold` all just ACK.
+- **Stubs.** `_escalate` and `_handle_threshold` just ACK (rules can act on those capsules instead).
   `boot/discovery.py` (reads `peers.json`), `RelayAgent` and `hal/clock.py` are unused.
-- **Tests cover the edges, not the kernel.** Store, transport, peer and self-describe tests
-  assert. `tests/test_weight.py` mostly prints; only its sharing-rule section asserts. Validator,
+- **Tests cover the edges more than the kernel.** Store, transport, peer, rules and
+  self-describe tests assert. `tests/test_weight.py` mostly prints; only its sharing-rule section asserts. Validator,
   interpreter, merge and scheduler have no asserting tests; their check is the demo trace.
 - **The self-description stays home and must be refreshed.** `self.*` capsules live only in
   `store/self.db`; no node sends them to peers. They expire after 7 days, and nothing reruns
@@ -327,6 +394,10 @@ your own evidence count and decay clock. Never store it as your opinion.
   as when Git Bash pipes Python's output, `demo.py` stops with `UnicodeEncodeError`.
   PowerShell and file redirection work; `self_describe.py` forces UTF-8 itself.
   Workaround: `PYTHONIOENCODING=utf-8`.
+- **Edge devices can't report outcomes.** The stripped ESP-NOW format has no outcome field, so an
+  edge message with trigger `task_result` upgrades to a capsule Alice refuses (`unknown_task`).
+- **Rule trust lives only in the node's database.** Delete `store/<name>.db` and every rule starts
+  over at unknown; there's no backup or export of opinions.
 
 ## Roadmap
 
@@ -335,7 +406,8 @@ your own evidence count and decay clock. Never store it as your opinion.
 3. Identity binding: ~~trust on first use~~ done; key registry or root of trust, key rotation.
 4. ~~Replay protection.~~ Done.
 5. ~~SQLite ledger.~~ Done. Next: prune on a schedule.
-6. Outcome field on `task_result` capsules, wired into `record_outcome`.
+6. ~~Outcome field on `task_result` capsules.~~ Done, with rules that learn from it. Next: edge
+   devices reporting outcomes, and persisting topic opinions.
 7. Relaying between peers and a queue for undelivered replies.
 8. Asserting tests for validator, interpreter, merge and scheduler.
 9. ~~Self-description capsules.~~ Done. Next: share them with peers after the hello, and decide

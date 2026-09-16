@@ -5,6 +5,10 @@ Each capsule is one row: the capsule as JSON (readable with sqlite3 and
 json_extract), its digest, when it was stored, the envelope signature if any,
 and indexed columns for lookups (sender, receiver, topic, intent, expiry).
 
+The same file also holds this node's local belief: an opinions table (value,
+weight, evidence count, status per key) and the set of task outcomes already
+counted. Neither is ever sent to peers.
+
 A capsule stored unsigned and appended again with its envelope gains the
 signature in place; a signed record is never replaced. Pruning deletes rows
 whose created + ttl_seconds has passed.
@@ -25,7 +29,7 @@ from typing import Iterator
 
 from envelope import digest
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_TTL_SECONDS = 3600
 
 _SCHEMA = """
@@ -49,6 +53,24 @@ CREATE INDEX IF NOT EXISTS capsules_receiver ON capsules(receiver);
 CREATE INDEX IF NOT EXISTS capsules_topic    ON capsules(topic);
 CREATE INDEX IF NOT EXISTS capsules_id       ON capsules(capsule_id);
 CREATE INDEX IF NOT EXISTS capsules_expires  ON capsules(expires_at);
+
+-- Local belief, never sent anywhere: one opinion per key (e.g. "rule:<capsule id>").
+CREATE TABLE IF NOT EXISTS opinions (
+    key            TEXT PRIMARY KEY,
+    value          REAL NOT NULL,
+    weight         REAL NOT NULL,
+    evidence_count INTEGER NOT NULL,
+    last_tested    TEXT,
+    created_at     TEXT NOT NULL,
+    status         TEXT NOT NULL DEFAULT 'active'
+);
+
+-- Each task's outcome is counted once, however many task_results arrive for it.
+CREATE TABLE IF NOT EXISTS counted_outcomes (
+    task_id    TEXT PRIMARY KEY,
+    success    INTEGER NOT NULL,
+    counted_at TEXT NOT NULL
+);
 """
 
 
@@ -167,9 +189,9 @@ class Store:
                 "SELECT 1 FROM capsules WHERE digest = ?", (digest_hex,)
             ).fetchone() is not None
 
-    def find(self, *, topic: str | None = None, sender: str | None = None,
-             receiver: str | None = None, capsule_id: str | None = None,
-             unexpired_at: datetime | None = None) -> list[dict]:
+    def find(self, *, topic: str | None = None, topic_prefix: str | None = None,
+             sender: str | None = None, receiver: str | None = None,
+             capsule_id: str | None = None, unexpired_at: datetime | None = None) -> list[dict]:
         """Records matching every given filter, in storage order. Uses the indexed columns."""
         where, params = [], []
         for column, value in (("topic", topic), ("sender", sender),
@@ -177,6 +199,10 @@ class Store:
             if value is not None:
                 where.append(f"{column} = ?")
                 params.append(value)
+        if topic_prefix is not None:
+            escaped = topic_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            where.append("topic LIKE ? ESCAPE '\\'")
+            params.append(escaped + "%")
         if unexpired_at is not None:
             where.append("(expires_at IS NULL OR expires_at >= ?)")
             params.append(unexpired_at.timestamp())
@@ -201,6 +227,44 @@ class Store:
     def __len__(self) -> int:
         with self._lock:
             return self._db.execute("SELECT COUNT(*) FROM capsules").fetchone()[0]
+
+    # --- local belief ---
+
+    def get_opinion(self, key: str) -> dict | None:
+        """{value, weight, evidence_count, last_tested, created_at, status} or None."""
+        with self._lock:
+            row = self._db.execute("SELECT * FROM opinions WHERE key = ?", (key,)).fetchone()
+        return dict(row) if row else None
+
+    def put_opinion(self, key: str, *, value: float, weight: float, evidence_count: int,
+                    last_tested: str | None, status: str = "active",
+                    created_at: str | None = None) -> None:
+        """Insert or update. created_at is kept from the first insert."""
+        with self._lock:
+            self._db.execute(
+                """INSERT INTO opinions (key, value, weight, evidence_count, last_tested, created_at, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(key) DO UPDATE SET value = excluded.value, weight = excluded.weight,
+                       evidence_count = excluded.evidence_count, last_tested = excluded.last_tested,
+                       status = excluded.status""",
+                (key, value, weight, evidence_count, last_tested,
+                 created_at or datetime.now(timezone.utc).isoformat(), status),
+            )
+
+    def opinions(self, key_prefix: str = "") -> dict[str, dict]:
+        with self._lock:
+            rows = self._db.execute("SELECT * FROM opinions WHERE key LIKE ? ORDER BY key",
+                                    (key_prefix.replace("%", "\\%") + "%",)).fetchall()
+        return {row["key"]: dict(row) for row in rows}
+
+    def mark_outcome_counted(self, task_id: str, success: bool) -> bool:
+        """True the first time a task's outcome is recorded, False for any repeat."""
+        with self._lock:
+            cur = self._db.execute(
+                "INSERT OR IGNORE INTO counted_outcomes (task_id, success, counted_at) VALUES (?, ?, ?)",
+                (task_id, int(success), datetime.now(timezone.utc).isoformat()),
+            )
+            return cur.rowcount == 1
 
     def close(self) -> None:
         with self._lock:

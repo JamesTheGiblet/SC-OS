@@ -3,7 +3,7 @@
 Working notes: decisions made and why, open questions, what's next.
 [README.md](README.md) describes the system; [CHANGELOG.md](CHANGELOG.md) records what changed.
 
-Last updated 2026-09-16, after self-description capsules.
+Last updated 2026-09-16, after rules that learn from outcomes.
 
 ## Decisions
 
@@ -42,15 +42,33 @@ Each decision was made against the code as it stood; revisit only with a reason.
   description can't drift from the code for longer than one run. Content-derived ids make reruns
   idempotent, and `derived_from` links a file's versions. Seven-day TTL: unrefreshed
   self-knowledge expires rather than going stale silently.
+- **Behavior is capsules too.** A rule is a signed `rule.<name>` capsule with a JSON spec in its
+  directive claim. No new claim type (peers would reject it) and no YAML (no new dependency).
+- **A node runs only rules it signed.** Running peers' rules would let any peer change a node's
+  behavior. A peer's rule is a hint until the node adopts it, and adoption starts it at unknown,
+  the same as "belief is earned locally".
+- **Rule trust is local and lives in the node's database**, keyed by rule id, never in the rule
+  capsule: capsules are signed and content-addressed, so they can't carry mutable state.
+- **A rule lives as long as its trust (Leighton Weight).** Live rules are re-issued before the
+  7-day TTL; tested rules are forgotten below weight 0.05, untested ones after 30 days. Chosen over
+  a schema change for longer TTLs: forgetting is the theory's own answer to stale knowledge.
+- **Outcomes are evidence only from the agent that did the work.** A `task_result` counts if it
+  answers a task this node sent to that agent, once per task. ACKs never count: the scheduler ACKs
+  automatically, so counting them would be receipt-as-evidence.
+- **Rules don't chain.** A rule never fires on another rule's output, so no loops. Revisit with a
+  depth limit if multi-step rules are needed.
 - **Merge keeps the trigger** of the first parent, or the second's if the first is `none`.
   No strength ordering between triggers yet.
 - **Version choice is numeric.** Highest shared version wins by number, not string sort.
 
 ## Open questions
 
-- **Where do outcomes come from?** `record_outcome` has no caller outside the demo, so opinions
-  never move from real traffic. Likely a success/failure field on `task_result` capsules that the
-  scheduler reads. Needs a schema decision.
+- **How far to trust a reported outcome?** A rule learns from what the worker says happened.
+  Should outcomes from a peer be weighted by trust in that peer, or confirmed by a second observer?
+- **Rule chaining.** Allow rules to fire on rule outputs with a depth limit?
+- **Edge outcomes.** The stripped ESP-NOW format has no outcome field. Add one, or have the
+  gateway report outcomes for edge devices?
+- **Persisting topic opinions.** Rule trust is stored; the scheduler's topic opinions aren't.
 - **Merged sender.** `merge` builds `agent://alice+agent://bob`, which isn't addressable.
   Proposal on the table: keep `sender` as the node doing the merge, both parents in
   `derived_from`, `method="merge"`.
@@ -76,7 +94,7 @@ Each decision was made against the code as it stood; revisit only with a reason.
 
 1. **Two machines.** Same code, `--host`. Expect clock skew, firewalls, real disconnects and
    path differences between Windows and Linux.
-2. **Outcome field** on `task_result`, wired into `record_outcome`.
+2. **Persist topic opinions** in the opinions table, like rule trust.
 3. **Prune on a schedule** in `run_alice.py`.
 4. **Merged sender** decision.
 5. **Relaying and a reply queue**, which turn the star into a network.

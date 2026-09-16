@@ -2,7 +2,7 @@
 Client side. Start run_alice.py first.
 
     python run_bob.py [--name bob] [--host 127.0.0.1] [--port 7707]
-                      [--hold SECONDS] [--replay]
+                      [--hold SECONDS] [--outcome success|failure|ignore] [--replay]
 
 Connects as agent://<name>, sends a hello with its key, checks Alice's
 hello against the pin, sends a signed capsule, and waits for Alice's signed
@@ -10,6 +10,9 @@ ACK referencing it. Run several with different --name values at once for a
 multi-node test.
 
 --hold waits between the handshake and the capsule, so sessions overlap.
+If one of Alice's rules asks for a task in return, the client carries it out
+and reports --outcome in a task_result (default success; "ignore" never
+answers). Alice's rule gains or loses trust from that report.
 --replay then resends the exact same signed capsule; Alice must reject it
 and close the session.
 """
@@ -26,7 +29,7 @@ from handshake import TOPIC as HELLO_TOPIC, negotiate
 from interpreter import render
 from peer import Node, PeerRejected
 from primitive import (
-    ActionHints, Capsule, Claim, ClaimType, Intent, Provenance, Relation,
+    ActionHints, Capsule, Claim, ClaimType, Intent, Outcome, Provenance, Relation,
     Semantics, Trigger, Uncertainty,
 )
 from store import Store
@@ -52,6 +55,7 @@ def main() -> int:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=7707)
     ap.add_argument("--hold", type=float, default=0.0)
+    ap.add_argument("--outcome", choices=["success", "failure", "ignore"], default="success")
     ap.add_argument("--replay", action="store_true")
     args = ap.parse_args()
     socket.setdefaulttimeout(30)
@@ -117,6 +121,44 @@ def main() -> int:
             log(f"FAIL reply references {reply.provenance.derived_from}, not our {msg.id}")
             return 1
         log("reply references our capsule: OK")
+
+        # did one of Alice's rules ask us to do something?
+        transport.conn.settimeout(3)
+        try:
+            task = peer.recv()
+        except TimeoutError:
+            task = None
+            log("no task requested")
+        finally:
+            if transport.conn is not None:
+                transport.conn.settimeout(30)
+        if task is not None and task.trigger == Trigger.TASK:
+            origin = f"rule {task.provenance.derived_from[0][-12:]}"                 if task.provenance.method == "rule" else "a request"
+            log(f"task from {origin}: {task.semantics.claims[0].statement}")
+            if args.outcome == "ignore":
+                log("ignoring the task (no outcome reported)")
+            else:
+                result = Capsule(
+                    id=f"urn:uuid:{uuid.uuid4()}",
+                    created=datetime.now(timezone.utc),
+                    sender=me,
+                    receiver=ALICE,
+                    intent=Intent.INFORM,
+                    trigger=Trigger.TASK_RESULT,
+                    semantics=Semantics(
+                        topic=task.semantics.topic,
+                        claims=(Claim(f"{args.outcome}: {task.semantics.claims[0].statement}",
+                                      ClaimType.OBSERVATION, 1.0),),
+                    ),
+                    provenance=Provenance(derived_from=(task.id,), method="observation"),
+                    outcome=Outcome(args.outcome, f"{args.name} carried out the task"),
+                )
+                peer.send(result)
+                log(f"sent task_result outcome={args.outcome}")
+                ack = peer.recv()
+                log(f"Alice answered: {ack.intent.value.upper()} {ack.semantics.claims[0].statement}")
+        elif task is not None:
+            log(f"unexpected capsule: {render(task).splitlines()[0]}")
 
         if args.replay:
             transport.send(ALICE, wire)       # byte-identical resend, same signature

@@ -8,12 +8,19 @@ session must open with a hello; Alice pins or checks the key, answers with
 her own hello, then dispatches every capsule through one shared scheduler.
 Replies are routed by receiver to that agent's open session.
 
+Rules: at start Alice issues the rules in --rules (default rules/builtin.json)
+as her own signed rule capsules, then runs maintenance: rules whose trust has
+faded are forgotten, live ones are re-issued before they expire. Maintenance
+repeats hourly. Rules fire on incoming capsules; outcomes reported in
+task_result capsules teach the rule that asked for the task.
+
 --sessions N exits after N sessions have ended (0 = run until Ctrl+C).
 """
 
 import argparse
 import socket
 import threading
+import time
 from datetime import datetime, timezone
 
 from agents.echo import EchoAgent
@@ -22,11 +29,14 @@ from hal.transport import SocketListener
 from handshake import negotiate
 from interpreter import render
 from peer import Node, Peer, PeerRejected
+from rules.__main__ import load_rule_file
+from rules.engine import RuleEngine
 from scheduler import Scheduler
 from store import Store
 from validator import CapsuleRejected
 
 ME = "agent://alice"
+MAINTAIN_EVERY_SECONDS = 3600
 _print_lock = threading.Lock()
 
 
@@ -51,7 +61,8 @@ class Server:
             log(f"  undeliverable {reply.intent.value.upper()} -> {reply.receiver} (no open session)")
             return
         target.send(reply)
-        log(f"  sent signed {reply.intent.value.upper()} -> {reply.receiver}")
+        origin = " (rule output)" if reply.provenance.method == "rule" else ""
+        log(f"  sent signed {reply.intent.value.upper()} -> {reply.receiver}{origin}")
 
     def handle(self, transport, addr) -> None:
         peer = self.node.session(transport)
@@ -79,7 +90,11 @@ class Server:
                 log(f"[{remote}] recv verified ({age * 1000:.1f} ms since created): "
                     f"{render(c).splitlines()[0]}")
                 with self.node.lock:          # one shared scheduler, one ledger
+                    learned_before = len(self.sched.learned)
                     replies = self.sched.dispatch(c)
+                    learned = self.sched.learned[learned_before:]
+                for line in learned:
+                    log(f"[{remote}] learned: {line}")
                 for r in replies:
                     self.route(r)
         except ConnectionError:
@@ -104,6 +119,7 @@ def main() -> int:
     ap.add_argument("--port", type=int, default=7707)
     ap.add_argument("--sessions", type=int, default=0,
                     help="exit after this many sessions end (0 = run until Ctrl+C)")
+    ap.add_argument("--rules", default="rules/builtin.json", help="rule file to issue at start")
     args = ap.parse_args()
     socket.setdefaulttimeout(30)
     started = datetime.now(timezone.utc).isoformat()
@@ -111,14 +127,32 @@ def main() -> int:
     log(f"genesis: {render(genesis('alice')).splitlines()[0]}")
     store = Store("store/alice.db")
     node = Node(ME, store)
-    server = Server(node, Scheduler(agents={ME: EchoAgent()}, store=store))
+    engine = RuleEngine(ME, store, node.key)
+    for name, rule_id in load_rule_file(engine, args.rules):
+        if rule_id is None:
+            log(f"rule {name}: forgotten earlier, not revived (python -m rules issue --force)")
+    report = engine.maintain()
+    if report["forgotten"]:
+        log(f"rules forgotten (trust faded): {', '.join(report['forgotten'])}")
+    for r in engine.status():
+        if r["status"] == "active":
+            log(f"rule {r['name']}: value={r['value']:+.2f} weight={r['weight']:.2f} "
+                f"n={r['evidence_count']} fires={'yes' if r['fires'] else 'no'}")
+    server = Server(node, Scheduler(agents={ME: EchoAgent()}, store=store, rules=engine))
     listener = SocketListener(args.host, args.port)
     log(f"listening on {args.host}:{args.port}"
         + (f", stopping after {args.sessions} sessions" if args.sessions else ""))
 
     threads: list[threading.Thread] = []
+    last_maintained = time.monotonic()
     try:
         while True:
+            if time.monotonic() - last_maintained > MAINTAIN_EVERY_SECONDS:
+                with node.lock:
+                    report = engine.maintain()
+                last_maintained = time.monotonic()
+                if report["refreshed"] or report["forgotten"]:
+                    log(f"rule maintenance: refreshed {report['refreshed']}, forgotten {report['forgotten']}")
             with server.ended_cond:
                 if args.sessions and server.ended >= args.sessions:
                     break
@@ -142,6 +176,12 @@ def main() -> int:
         signed = rec["envelope"]["pubkey_id"] if "envelope" in rec else "UNSIGNED"
         log(f"  {rec['stored_at'][11:23]}  {rec['digest'][:12]}  {c['intent']:6} "
             f"{c['from']} -> {c['to']}  topic={c['semantics']['topic']}  signed_by={signed}")
+    log("rules now:")
+    for r in engine.status():
+        log(f"  {r['status']:10} {r['name']:28} value={r['value']:+.2f} weight={r['weight']:.2f} "
+            f"n={r['evidence_count']} stance={r['stance']}")
+    for p in engine.problems:
+        log(f"  rule problem: {p}")
     return 0
 
 

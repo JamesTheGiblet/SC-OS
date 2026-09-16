@@ -2,12 +2,19 @@ import json, uuid
 from datetime import datetime, timezone
 from primitive import (
     Capsule, Semantics, Claim, ClaimType, Relation,
-    Uncertainty, Provenance, ActionHints, Epistemic, Intent, Trigger,
+    Uncertainty, Provenance, ActionHints, Epistemic, Intent, Trigger, Outcome,
 )
 from validator import validate
 
 
 def to_wire(c: Capsule) -> dict:
+    wire = _to_wire(c)
+    if c.outcome is not None:           # absent otherwise, so older capsules keep their digests
+        wire["outcome"] = {"status": c.outcome.status, "detail": c.outcome.detail}
+    return wire
+
+
+def _to_wire(c: Capsule) -> dict:
     return {
         "capsule_version": c.capsule_version,
         "id": c.id,
@@ -98,6 +105,8 @@ def from_wire(d: dict) -> Capsule:
                 if ep.get("last_tested") else None,
         ),
         capsule_version=d["capsule_version"],
+        outcome=Outcome(status=d["outcome"]["status"], detail=d["outcome"].get("detail", ""))
+            if d.get("outcome") else None,
     )
 
 
