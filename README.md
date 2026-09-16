@@ -114,6 +114,7 @@ Over idle time weight decays and value slides back toward +1 at the same rate.
   Scheduler replies carry `derived_from` pointing at their parent.
 - **Real validation.** Schema, version, clock skew, unknown predicates, incoherent
   intents (an `inform` with no claims), expired claims, merges with fewer than 2 parents.
+  Edge messages are checked against `sc_edge.json` on upgrade and downgrade.
 - **Merge.** Same-statement claims keep the higher confidence. Relations and unknowns
   combine. Trigger survives.
 - **Honest epistemics.** Receipt leaves an opinion at unknown; an observed outcome moves it;
@@ -149,9 +150,6 @@ Over idle time weight decays and value slides back toward +1 at the same rate.
   The listener accepts one connection, ever, and ignores the `peer` argument.
 - **`recv` trusts the sender's own label.** It returns the envelope's self-declared `pubkey_id`,
   and nothing checks that against the capsule's `from`.
-- **Edge downgrade emits an invalid message.** `to_edge_wire` writes `tr: "none"` for
-  untriggered capsules, but `sc_edge.json` doesn't allow `none`. Nothing validates edge
-  messages, so it passes silently. It also drops the sender.
 - **Pruning rewrites history.** `Store.prune_expired` resets every surviving record's
   `stored_at` to the time of the prune.
 - **Some provenance is missing.** Agent replies (`EchoAgent`) and `from_edge_wire` don't set

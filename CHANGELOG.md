@@ -5,13 +5,18 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
 ## [Unreleased]
 
 ### Added
+
 - `README.md` and this changelog.
 
 ### Fixed
+
 - **Handshake vocab version.** `make_hello` sent Python's set repr (`vocab_version={'1.0'}`).
   It now sends `vocab_versions=1.0`, matching `capsule_versions`. `negotiate` compares
   vocab versions, raises `no shared vocab version` on mismatch, and returns `vocab_version`.
 - **Version choice compares numbers, not strings.** `10.0` now beats `9.0`.
+- **Edge downgrade emitted invalid messages.** `sc_edge.json` now allows `tr: "none"`
+  (as `vocab.json` does). `from_edge_wire` and `to_edge_wire` validate against the
+  schema and raise `CapsuleRejected("edge_schema", …)` on a bad message.
 
 ## [v0.1] — 2026-09-16
 
@@ -19,6 +24,7 @@ First tagged state. Single-process kernel; the interface is frozen until the
 two-process socket test passes.
 
 ### Added
+
 - `envelope.py`: canonical JSON, SHA-256 `digest`, Ed25519 `sign`, `open_envelope`,
   `verify`, and an `Envelope` type with `to_wire()`. The module was imported by the
   store and demo but didn't exist, so Python found an unrelated `envelope` email library instead.
@@ -27,6 +33,7 @@ two-process socket test passes.
 - `NOTES.md`, `.gitignore`, git repository.
 
 ### Changed
+
 - `Scheduler.dispatch` stores every reply as well as the incoming capsule.
   Routing moved unchanged into `_route`.
 - Scheduler replies set `provenance.derived_from` to the parent id, `method="reply"`.
@@ -36,6 +43,7 @@ two-process socket test passes.
   opinion before and after a recorded outcome.
 
 ### Fixed
+
 - **Store returned the wrong capsule.** The index stored the count of distinct digests
   where it needed line numbers. Once a duplicate was appended, the two went out of step,
   and on the next run `store.get` read an older capsule (`retrieved matches: False`).
@@ -45,16 +53,19 @@ two-process socket test passes.
 - `demo.py` put the wrong directory on `sys.path` after the move.
 
 ### The good
+
 - The demo runs end to end, and repeated runs no longer disagree with each other.
 - The store is exact and content-addressed, so `derived_from` chains can be trusted.
 - Receiving a capsule and seeing an outcome are separate events, as the theory requires.
 
 ### The bad
+
 - Still one process. Identity isn't bound to keys. Signatures aren't stored.
 - `record_outcome` has no real caller; capsules can't say whether a task succeeded.
 - No asserting tests; the demo trace is the test.
 
 ### The ugly
+
 - Found while writing these docs, **not fixed in v0.1**:
   - `SocketTransport.recv` loses or garbles messages that share a TCP read.
   - `make_hello` sends a Python set repr as the vocab version.

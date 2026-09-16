@@ -15,7 +15,7 @@
     "s":  { "type": "string", "maxLength": 120 },
     "tr": {
       "type": "string",
-      "enum": ["task", "task_result", "threshold", "stuck", "heartbeat", "announce"]
+      "enum": ["none", "task", "task_result", "threshold", "stuck", "heartbeat", "announce"]
     }
   }
 }
