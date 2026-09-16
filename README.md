@@ -5,9 +5,9 @@ A capsule carries claims with confidence, relations between entities, what the s
 doesn't know, where the claim came from, and how urgently to act on it.
 The "OS" is the kernel that routes capsules between agents; the capsule protocol is the core.
 
-**Status: v0.1, single process.** Everything runs in one Python process. Nothing has
-crossed a real network yet. Read [the good, the bad, and the ugly](#the-good-the-bad-and-the-ugly)
-before building on it.
+**Status: v0.1 plus a working two-process session.** Alice and Bob run as separate processes
+over TCP on one machine, with signed capsules and pinned keys. It hasn't crossed two machines yet.
+Read [the good, the bad, and the ugly](#the-good-the-bad-and-the-ugly) before building on it.
 
 ## Quick start
 
@@ -22,14 +22,39 @@ python -m store store/demo.log     # print the ledger the demo wrote (add --full
 `demo.py` deletes `store/demo.log` at startup so each run begins empty.
 Digests differ between runs because every capsule gets a fresh UUID and timestamp.
 
-Asserting tests (the transport ones use real localhost TCP):
+### Two processes: Alice and Bob
+
+Two terminals, Alice first:
+
+```sh
+python run_alice.py               # listens on 127.0.0.1:7707
+python run_bob.py                 # connects, hello, sends a capsule, waits for the ACK
+```
+
+Both accept `--host` and `--port`. Bob retries the connection for 10 seconds.
+A session goes:
+
+1. Bob sends a hello carrying his public key. Alice pins it.
+2. Alice answers with her own hello and key. Bob pins it.
+3. Bob sends a signed capsule. Alice verifies and validates it, then runs it through the scheduler.
+4. Alice sends a signed ACK that points back to Bob's capsule. Bob verifies it.
+
+Each side keeps its ledger in `store/<name>.log`, its pins in `store/<name>.pins.json`,
+and its private key in `keys/<name>.ed25519` (git-ignored). Ledgers and pins persist,
+so later runs append and must present the same keys. Delete `store/<name>.pins.json`
+to forget a peer.
+
+### Tests
+
+Asserting tests (transport tests use real localhost TCP):
 
 ```sh
 python tests/test_store.py
 python tests/test_transport.py
+python tests/test_peer.py         # key pinning and rejections
 ```
 
-Weight model walkthrough (prints trajectories, no asserts):
+Weight model walkthrough (prints trajectories; the sharing-rule section asserts):
 
 ```sh
 PYTHONPATH=. python tests/test_weight.py            # bash
@@ -95,6 +120,8 @@ capsule ──to_wire──► dict ──sign──► envelope {capsule, sig, 
 | `scheduler.py` | Kernel: stores in and out, routes by trigger, `record_outcome` feeds opinions |
 | `weight.py` | Leighton Weight: exponential decay, `Opinion` (value + weight), `blend` |
 | `handshake.py` | Hello capsule, version and predicate negotiation |
+| `peer.py` | Signed session over any transport: trust-on-first-use key pins, verify, validate, store signed |
+| `run_alice.py`, `run_bob.py` | Two-process session: Alice listens, Bob connects |
 | `boot/genesis.py` | A node's first capsule |
 | `edge/upgrade.py`, `edge/sc_edge.json` | Stripped ESP-NOW wire form (≤16/32/120-char fields) and conversion |
 | `agents/` | `EchoAgent`, `RelayAgent` |
@@ -133,27 +160,40 @@ your own evidence count and decay clock. Never store it as your opinion.
   idle time returns it to unknown.
 - **Edge round-trip.** A stripped ESP32 message upgrades to a full capsule and
   downgrades back to the identical stripped form.
+- **Two processes talk.** `run_alice.py` and `run_bob.py` handshake over TCP, pin each other's
+  keys, and exchange a signed capsule and a signed ACK. Every ledger record on both sides is
+  signed, and both sides compute identical digests for the same capsules.
+- **Rejections are tested.** `Peer.recv` rejects, and `tests/test_peer.py` proves:
+  - capsules before a hello
+  - tampered content
+  - a new key for a pinned agent
+  - a signer label that differs from `from`
+  - capsules addressed to someone else
+  - sending as another agent
 - **Small dependency surface.** `jsonschema` and `cryptography`, nothing else.
 
 ### The bad — known limits, by design for now
 
-- **Single process only.** `SocketTransport` is tested over localhost but nothing uses it.
-  The kernel doesn't import `hal/` at all. The socket link is point-to-point: one peer
-  at a time, `peer` in `send()` isn't used for routing, and a client doesn't reconnect.
-- **Identity isn't bound to keys.** A signature proves *some key* signed a capsule,
-  not that the key belongs to `agent://alice`. No registry, no trust-on-first-use, no root of trust.
-  Genesis doesn't create or announce a key.
-- **Only some ledger entries are signed.** `Store.append(capsule, envelope=wire)` keeps
-  the signature, but `Scheduler.dispatch` has no envelope to pass, and replies aren't signed
-  at all. In the demo, Alice's capsule is stored signed and Bob's ACK unsigned.
+- **One machine, one peer, one session.** The two-process run uses localhost. `run_alice.py`
+  serves one peer and exits when it disconnects. The socket link is point-to-point, and `peer`
+  in `send()` isn't used for routing. Bob doesn't reconnect mid-session.
+- **Trust on first use is only as good as first contact.** Whoever says hello first as
+  `agent://bob` gets pinned as Bob. There's no registry or root of trust, and no way to rotate a key.
+  Genesis doesn't create or announce a key; `peer.py` does.
+- **Replays aren't detected.** A captured signed capsule verifies again if resent. The store
+  ignores the duplicate, but the scheduler would dispatch it again. Nonces, sequence numbers or
+  seen-id tracking would fix it.
+- **Signing lives outside the kernel.** `Peer` signs and stores signed records. `demo.py` and
+  `Scheduler` used alone still store unsigned replies.
 - **Outcomes have nowhere to come from.** `record_outcome` is only called by the demo.
   Capsules have no field for task success or failure.
 - **Stubs.** `_escalate`, `_handle_task_result` and `_handle_threshold` all just ACK.
   `boot/discovery.py` (reads `peers.json`), `RelayAgent` and `hal/clock.py` are unused.
-- **Few real tests.** The store and transport tests assert. `tests/test_weight.py`
-  mostly prints trajectories; only its sharing-rule section asserts.
+- **Tests cover the edges, not the kernel.** Store, transport and peer tests assert.
+  `tests/test_weight.py` mostly prints; only its sharing-rule section asserts. Validator,
+  interpreter, merge and scheduler have no asserting tests; their check is the demo trace.
 - **Hints aren't wired in.** Nothing fills a capsule's `epistemic` block from the sender's
-  opinion, and the scheduler never calls `blend`. For the rest, correctness means "the demo trace looks right".
+  opinion, and the scheduler never calls `blend`.
 - **Scale.** `store.get` scans the file line by line. There's no file locking, so
   two processes must not share one store file.
 - **Tunables with no definition yet.** `stakes_factor` means nothing concrete. The stance bands are
@@ -161,8 +201,9 @@ your own evidence count and decay clock. Never store it as your opinion.
 
 ### The ugly — will bite you without warning
 
-- **`recv` trusts the sender's own label.** It returns the envelope's self-declared `pubkey_id`,
-  and nothing checks that against the capsule's `from`.
+- **`SocketTransport.recv` on its own trusts the sender's label.** It returns the envelope's
+  self-declared `pubkey_id`. `Peer.recv` does the checking; call the transport directly
+  and you get none of it.
 - **Some provenance is missing.** Agent replies (`EchoAgent`) and `from_edge_wire` don't set
   `derived_from`. `Provenance.signature` is always `null` and unrelated to the envelope signature.
 - **Merged sender is a string join.** `merge` produces `agent://alice+agent://bob`,
@@ -171,9 +212,10 @@ your own evidence count and decay clock. Never store it as your opinion.
 ## Roadmap
 
 1. ~~Fix `SocketTransport` framing.~~ Done.
-2. Two-process test: `run_alice.py` listens, `run_bob.py` connects.
-3. Identity binding: key ↔ agent id.
-4. Outcome field on `task_result` capsules, wired into `record_outcome`.
-5. Real tests with asserts.
+2. ~~Two-process test.~~ Done on one machine; next, two machines.
+3. Identity binding: ~~trust on first use~~ done; key registry or root of trust, key rotation.
+4. Replay protection.
+5. Outcome field on `task_result` capsules, wired into `record_outcome`.
+6. Asserting tests for validator, interpreter, merge and scheduler.
 
 See [CHANGELOG.md](CHANGELOG.md) for history and [NOTES.md](NOTES.md) for open design questions.

@@ -7,6 +7,21 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
 ### Added
 
 - `README.md` and this changelog.
+- **Two-process session.** `run_alice.py` listens and `run_bob.py` connects over TCP.
+  They exchange hellos, then a signed capsule and a signed ACK that references it.
+- **`peer.py`: identity by trust on first use.** A hello carries the sender's Ed25519 public
+  key and is signed by it; the receiver pins agent id → key in `store/<name>.pins.json`.
+  `Peer.recv` rejects:
+  - a capsule from an agent with no pinned key
+  - a changed key for a pinned agent
+  - a bad signature
+  - an envelope signer that isn't the capsule's `from`
+  - a capsule addressed to someone else
+  - a capsule that fails validation
+
+  `Peer.send` refuses to send as another agent. Both directions are stored with signatures.
+  Keys persist in `keys/<name>.ed25519`. `keys/` and `store/*.json` are git-ignored.
+- `tests/test_peer.py`: nine asserting tests of pinning and rejections.
 - `tests/test_transport.py`: five asserting tests over real localhost TCP.
 - `tests/test_store.py`: exact round-trip, duplicate appends, reopen, pruning, signatures.
 - **Signatures in the ledger.** `Store.append(capsule, envelope=wire)` saves `sig`, `alg` and
@@ -32,6 +47,9 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
 
 ### Fixed
 
+- **Every reply failed validation.** Scheduler replies set `provenance.method="reply"`, which
+  `sc.schema.json` didn't allow. The single-process demo never validated a reply; the first
+  two-process run rejected Alice's ACK. `reply` is now an allowed method.
 - **Handshake vocab version.** `make_hello` sent Python's set repr (`vocab_version={'1.0'}`).
   It now sends `vocab_versions=1.0`, matching `capsule_versions`. `negotiate` compares
   vocab versions, raises `no shared vocab version` on mismatch, and returns `vocab_version`.
