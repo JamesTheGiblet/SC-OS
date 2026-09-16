@@ -8,6 +8,7 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
 
 - `README.md` and this changelog.
 - `tests/test_transport.py`: five asserting tests over real localhost TCP.
+- `tests/test_store.py`: exact round-trip, duplicate appends, reopen, pruning.
 - `SocketTransport.close()`.
 
 ### Fixed
@@ -23,6 +24,8 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
   two messages in one TCP read raised `JSONDecodeError: Extra data`, and bytes after the
   first newline were dropped. Leftover bytes are now kept for the next `recv`.
   Frames are capped at 1 MiB. A listener whose peer disconnects accepts the next connection.
+- **Pruning rewrote history.** `Store.prune_expired` reset `stored_at` on every record it kept.
+  It now rewrites surviving records unchanged.
 
 ## [v0.1] — 2026-09-16
 

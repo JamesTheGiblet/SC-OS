@@ -22,9 +22,10 @@ python -m store store/demo.log     # print the ledger the demo wrote (add --full
 `demo.py` deletes `store/demo.log` at startup so each run begins empty.
 Digests differ between runs because every capsule gets a fresh UUID and timestamp.
 
-Socket framing tests (real localhost TCP, asserts):
+Asserting tests (the transport ones use real localhost TCP):
 
 ```sh
+python tests/test_store.py
 python tests/test_transport.py
 ```
 
@@ -143,7 +144,7 @@ Over idle time weight decays and value slides back toward +1 at the same rate.
   Capsules have no field for task success or failure.
 - **Stubs.** `_escalate`, `_handle_task_result` and `_handle_threshold` all just ACK.
   `boot/discovery.py` (reads `peers.json`), `RelayAgent` and `hal/clock.py` are unused.
-- **Few real tests.** Only `tests/test_transport.py` asserts. `tests/test_weight.py`
+- **Few real tests.** Only the store and transport tests assert. `tests/test_weight.py`
   prints trajectories and asserts nothing. For the rest, correctness means "the demo trace looks right".
 - **Scale.** `store.get` scans the file line by line. There's no file locking, so
   two processes must not share one store file.
@@ -154,8 +155,6 @@ Over idle time weight decays and value slides back toward +1 at the same rate.
 
 - **`recv` trusts the sender's own label.** It returns the envelope's self-declared `pubkey_id`,
   and nothing checks that against the capsule's `from`.
-- **Pruning rewrites history.** `Store.prune_expired` resets every surviving record's
-  `stored_at` to the time of the prune.
 - **Some provenance is missing.** Agent replies (`EchoAgent`) and `from_edge_wire` don't set
   `derived_from`. `Provenance.signature` is always `null` and unrelated to the envelope signature.
 - **Merged sender is a string join.** `merge` produces `agent://alice+agent://bob`,

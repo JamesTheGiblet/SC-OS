@@ -72,26 +72,23 @@ class Store:
         now = now or datetime.now(timezone.utc)
         keep: list[dict] = []
         dropped = 0
-        for capsule in self.all():
+        for rec in self.records():
+            capsule = rec["capsule"]
             created = datetime.fromisoformat(capsule["created"])
             ttl = capsule.get("action_hints", {}).get("ttl_seconds", 3600)
             if (now - created).total_seconds() > ttl:
                 dropped += 1
             else:
-                keep.append(capsule)
+                keep.append(rec)
         if dropped:
             self._rewrite(keep)
         return dropped
 
-    def _rewrite(self, capsules: list[dict]) -> None:
+    def _rewrite(self, records: list[dict]) -> None:
+        """Rewrite the log with these records, unchanged (stored_at is history)."""
         tmp = self.path.with_suffix(".tmp")
         with tmp.open("w") as f:
-            for c in capsules:
-                rec = {
-                    "digest": digest(c),
-                    "stored_at": datetime.now(timezone.utc).isoformat(),
-                    "capsule": c,
-                }
+            for rec in records:
                 f.write(json.dumps(rec, separators=(",", ":")) + "\n")
         tmp.replace(self.path)
         self._index.clear()
