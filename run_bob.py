@@ -1,10 +1,17 @@
 """
-Two-process test, connecting side. Start run_alice.py first.
+Client side. Start run_alice.py first.
 
-    python run_bob.py [--host 127.0.0.1] [--port 7707]
+    python run_bob.py [--name bob] [--host 127.0.0.1] [--port 7707]
+                      [--hold SECONDS] [--replay]
 
-Bob connects, sends a hello with his key, pins Alice's key from her hello,
-sends a signed capsule, and waits for Alice's signed ACK referencing it.
+Connects as agent://<name>, sends a hello with its key, checks Alice's
+hello against the pin, sends a signed capsule, and waits for Alice's signed
+ACK referencing it. Run several with different --name values at once for a
+multi-node test.
+
+--hold waits between the handshake and the capsule, so sessions overlap.
+--replay then resends the exact same signed capsule; Alice must reject it
+and close the session.
 """
 
 import argparse
@@ -17,7 +24,7 @@ from boot.genesis import genesis
 from hal.transport import SocketTransport
 from handshake import TOPIC as HELLO_TOPIC, negotiate
 from interpreter import render
-from peer import Peer, PeerRejected
+from peer import Node, PeerRejected
 from primitive import (
     ActionHints, Capsule, Claim, ClaimType, Intent, Provenance, Relation,
     Semantics, Trigger, Uncertainty,
@@ -25,12 +32,7 @@ from primitive import (
 from store import Store
 from validator import CapsuleRejected
 
-ME = "agent://bob"
 ALICE = "agent://alice"
-
-
-def log(msg: str) -> None:
-    print(f"[bob]   {msg}", flush=True)
 
 
 def connect(host: str, port: int, wait_s: float = 10.0) -> SocketTransport:
@@ -38,7 +40,7 @@ def connect(host: str, port: int, wait_s: float = 10.0) -> SocketTransport:
     while True:
         try:
             return SocketTransport("connect", host, port)
-        except (ConnectionRefusedError, OSError):
+        except OSError:
             if time.monotonic() > deadline:
                 raise
             time.sleep(0.2)
@@ -46,15 +48,24 @@ def connect(host: str, port: int, wait_s: float = 10.0) -> SocketTransport:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--name", default="bob")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=7707)
+    ap.add_argument("--hold", type=float, default=0.0)
+    ap.add_argument("--replay", action="store_true")
     args = ap.parse_args()
     socket.setdefaulttimeout(30)
 
-    log(f"genesis: {render(genesis('bob')).splitlines()[0]}")
-    store = Store("store/bob.log")
+    me = f"agent://{args.name}"
+    prefix = f"[{args.name}]".ljust(8)
+
+    def log(msg: str) -> None:
+        print(f"{prefix}{msg}", flush=True)
+
+    log(f"genesis: {render(genesis(args.name)).splitlines()[0]}")
+    store = Store(f"store/{args.name}.log")
     transport = connect(args.host, args.port)
-    peer = Peer(ME, transport, store)
+    peer = Node(me, store).session(transport)
     log(f"connected to {args.host}:{args.port}")
 
     try:
@@ -68,11 +79,14 @@ def main() -> int:
         pin = "first contact, key pinned" if peer.last_pin == "new" else "key matches pin"
         log(f"hello from {ALICE}, {pin}; agreed capsule_version={agreed['capsule_version']}")
 
+        if args.hold:
+            time.sleep(args.hold)
+
         now = datetime.now(timezone.utc)
         msg = Capsule(
             id=f"urn:uuid:{uuid.uuid4()}",
             created=now,
-            sender=ME,
+            sender=me,
             receiver=ALICE,
             intent=Intent.INFORM,
             trigger=Trigger.THRESHOLD,
@@ -80,7 +94,7 @@ def main() -> int:
                 topic="supply_chain_risk",
                 claims=(
                     Claim(
-                        statement="Supplier X has 40% capacity reduction",
+                        statement=f"Supplier X has 40% capacity reduction (seen by {args.name})",
                         type=ClaimType.OBSERVATION,
                         confidence=0.82,
                         evidence=("source:reuters-2026-09-14",),
@@ -93,18 +107,26 @@ def main() -> int:
             provenance=Provenance(method="observation"),
             action_hints=ActionHints(priority="high", ttl_seconds=3600, requires_ack=True),
         )
-        peer.send(msg)
-        log(f"sent signed {msg.intent.value.upper()} topic={msg.semantics.topic} id={msg.id[-12:]}")
+        wire = peer.send(msg)
+        log(f"sent signed {msg.intent.value.upper()} id=…{msg.id[-12:]}")
 
         reply = peer.recv()
         cycle = (datetime.now(timezone.utc) - now).total_seconds()
-        log(f"recv verified ({cycle * 1000:.1f} ms cycle: sign, send, Alice verify+dispatch+sign, recv, verify):")
-        for line in render(reply).splitlines():
-            log(f"  {line}")
+        log(f"recv verified ({cycle * 1000:.1f} ms cycle): {render(reply).splitlines()[0]}")
         if msg.id not in reply.provenance.derived_from:
-            log(f"FAIL reply does not reference {msg.id}")
+            log(f"FAIL reply references {reply.provenance.derived_from}, not our {msg.id}")
             return 1
         log("reply references our capsule: OK")
+
+        if args.replay:
+            transport.send(ALICE, wire)       # byte-identical resend, same signature
+            log("replayed the same signed capsule")
+            try:
+                extra = peer.recv()
+                log(f"FAIL replay was answered: {render(extra).splitlines()[0]}")
+                return 1
+            except ConnectionError:
+                log("replay rejected, Alice closed the session: OK")
     except (PeerRejected, CapsuleRejected) as e:
         log(f"REJECT {type(e).__name__}: {e}")
         return 1
@@ -113,13 +135,6 @@ def main() -> int:
         return 1
     finally:
         transport.close()
-
-    log(f"ledger {store.path} ({len(store)} records):")
-    for rec in store.records():
-        c = rec["capsule"]
-        signed = rec["envelope"]["pubkey_id"] if "envelope" in rec else "UNSIGNED"
-        log(f"  {rec['digest'][:12]}  {c['intent']:6} {c['from']} -> {c['to']}  "
-            f"topic={c['semantics']['topic']}  signed_by={signed}")
     return 0
 
 

@@ -128,6 +128,31 @@ def test_prune_after_supersede_keeps_one_signed_line():
     assert s.envelope_of(d) == wire
 
 
+def test_concurrent_appends_keep_index_exact():
+    import threading
+    s = new_store()
+    digests: list[str] = []
+    lock = threading.Lock()
+
+    def writer(w):
+        for i in range(50):
+            d = s.append(capsule(w * 1000 + i, 60))
+            s.append(capsule(w * 1000 + i, 60))          # duplicate, must be a no-op
+            with lock:
+                digests.append(d)
+
+    threads = [threading.Thread(target=writer, args=(w,)) for w in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(s) == 400
+    for store in (s, Store(str(s.path))):
+        for d in digests:
+            assert store.get(d)["id"].startswith("urn:uuid:")
+        assert sorted(r["digest"] for r in store.records()) == sorted(digests)
+
+
 if __name__ == "__main__":
     tests = [v for k, v in dict(globals()).items() if k.startswith("test_")]
     for fn in tests:

@@ -22,6 +22,23 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
   `Peer.send` refuses to send as another agent. Both directions are stored with signatures.
   Keys persist in `keys/<name>.ed25519`. `keys/` and `store/*.json` are git-ignored.
 - `tests/test_peer.py`: nine asserting tests of pinning and rejections.
+- **Replay protection.** `Peer.recv` rejects a verified capsule whose digest is already in the
+  ledger, which also works after a restart. It rejects expired capsules, so a replay can't
+  outlive the record that catches it.
+- **Multi-peer server.** `hal.transport.SocketListener` accepts many connections, each wrapped
+  as its own `SocketTransport`. `run_alice.py` serves concurrent sessions, one thread each,
+  sharing one node and one scheduler. Replies are routed by `to` to that agent's open session.
+  `--sessions N` exits after N sessions.
+- **Clients as any agent.** `run_bob.py` takes `--name` (e.g. `carol`), `--hold` to overlap
+  sessions, and `--replay` to resend a signed capsule and expect rejection.
+- **Session binding.** A session must open with a hello, even from an already pinned agent,
+  and then carries only that agent's capsules. `Peer.send` refuses other receivers.
+  An agent can hold one open session on Alice at a time.
+- **Thread safety.** `Store` locks appends, reads and prunes; `records()` iterates a snapshot.
+  `SocketTransport.send` is locked so concurrent replies can't interleave on the wire.
+- Tests: replay (same session, replayed hello, after restart), expiry, session binding,
+  pin poisoning, 8 concurrent sessions on one node, concurrent store appends, and a
+  listener serving 6 peers at once with interleaving-proof sends.
 - `Peer.last_pin` is `"new"` or `"known"` after a hello. The run scripts log
   `first contact, key pinned` or `key matches pin` instead of `key pinned` every time.
 
@@ -37,6 +54,8 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
 
 ### Changed
 
+- `peer.py` split into `Node` (one agent's key, pins, ledger and lock, shared by all its
+  sessions) and `Peer` (one session). Create sessions with `Node(...).session(transport)`.
 - Run-script timings are labelled for what they measure: Bob logs a full `cycle` (sign, send,
   Alice's verify, dispatch and sign, receive, verify). Alice logs time since the sender created
   the capsule. Neither is network latency.
@@ -55,6 +74,11 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
 
 ### Fixed
 
+- **A forged hello could poison a pin.** `peer.py` pinned the key offered in a hello before
+  checking the hello's signature. A hello for `agent://bob` offering any key, signed by anyone,
+  was rejected but left that key pinned on disk, locking the real Bob out. Pins are now written
+  only after the signature verifies against the offered key and the capsule validates.
+  Confirmed against the previous code before fixing.
 - **Every reply failed validation.** Scheduler replies set `provenance.method="reply"`, which
   `sc.schema.json` didn't allow. The single-process demo never validated a reply; the first
   two-process run rejected Alice's ACK. `reply` is now an allowed method.

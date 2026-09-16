@@ -5,8 +5,9 @@ A capsule carries claims with confidence, relations between entities, what the s
 doesn't know, where the claim came from, and how urgently to act on it.
 The "OS" is the kernel that routes capsules between agents; the capsule protocol is the core.
 
-**Status: v0.1 plus a working two-process session.** Alice and Bob run as separate processes
-over TCP on one machine, with signed capsules and pinned keys. It hasn't crossed two machines yet.
+**Status: v0.1 plus working multi-node sessions.** Alice serves several peers at once over TCP,
+with signed capsules, pinned keys and replay protection. Tested with three nodes on one machine;
+it hasn't crossed two machines yet.
 Read [the good, the bad, and the ugly](#the-good-the-bad-and-the-ugly) before building on it.
 
 ## Quick start
@@ -22,17 +23,19 @@ python -m store store/demo.log     # print the ledger the demo wrote (add --full
 `demo.py` deletes `store/demo.log` at startup so each run begins empty.
 Digests differ between runs because every capsule gets a fresh UUID and timestamp.
 
-### Two processes: Alice and Bob
+### Multiple nodes: Alice, Bob, Carol
 
-Two terminals, Alice first:
+Alice first, then any number of clients, each in its own terminal:
 
 ```sh
-python run_alice.py               # listens on 127.0.0.1:7707
-python run_bob.py                 # connects, hello, sends a capsule, waits for the ACK
+python run_alice.py                           # serves many peers on 127.0.0.1:7707 until Ctrl+C
+python run_bob.py                             # agent://bob: hello, capsule, wait for ACK
+python run_bob.py --name carol --hold 2       # agent://carol, waits 2 s so sessions overlap
+python run_bob.py --name carol --replay       # then resends the same signed capsule; Alice must reject it
 ```
 
-Both accept `--host` and `--port`. Bob retries the connection for 10 seconds.
-A session goes:
+All accept `--host` and `--port`. `run_alice.py --sessions N` exits after N sessions end.
+Clients retry the connection for 10 seconds. A session goes:
 
 1. Bob sends a hello carrying his public key. Alice pins it.
 2. Alice answers with her own hello and key. Bob pins it.
@@ -49,8 +52,17 @@ may have upgraded its versions between connections, and the hello is where its k
 against the pin. Several hellos in a ledger mean several sessions. Timings in the log cover
 signing, sending, verifying and dispatch, not just network time.
 
-Verified restarts: same keys are accepted, a Bob with a new key is rejected by Alice
-(`key for agent://bob changed since first contact`), and deleted pins lead to a fresh first contact.
+Alice runs one thread per connection, sharing one node (key, pins, ledger) and one scheduler.
+Replies are routed by `to` through the table of open sessions. An agent can have one open
+session at a time. Any rejection closes that session only.
+
+Verified with real processes:
+- **Restarts:** same keys are accepted. A Bob with a new key is rejected
+  (`key for agent://bob changed since first contact`). Deleted pins lead to a fresh first contact.
+- **Three nodes:** Bob and Carol's sessions overlapped, and each got the ACK for its own capsule.
+  Carol was pinned on first contact while Bob matched his pin.
+- **Replay:** Carol resent a byte-identical signed capsule; Alice rejected it
+  (`replay: capsule … was already received`) and closed that session.
 
 ### Tests
 
@@ -59,7 +71,7 @@ Asserting tests (transport tests use real localhost TCP):
 ```sh
 python tests/test_store.py
 python tests/test_transport.py
-python tests/test_peer.py         # key pinning and rejections
+python tests/test_peer.py         # pinning, replay, session binding, concurrent sessions
 ```
 
 Weight model walkthrough (prints trajectories; the sharing-rule section asserts):
@@ -128,12 +140,12 @@ capsule ──to_wire──► dict ──sign──► envelope {capsule, sig, 
 | `scheduler.py` | Kernel: stores in and out, routes by trigger, `record_outcome` feeds opinions |
 | `weight.py` | Leighton Weight: exponential decay, `Opinion` (value + weight), `blend` |
 | `handshake.py` | Hello capsule, version and predicate negotiation |
-| `peer.py` | Signed session over any transport: trust-on-first-use key pins, verify, validate, store signed |
-| `run_alice.py`, `run_bob.py` | Two-process session: Alice listens, Bob connects |
+| `peer.py` | `Node` (key, pins, ledger, lock) and `Peer` (one session): trust-on-first-use pins, verify, validate, replay check, store signed |
+| `run_alice.py`, `run_bob.py` | Multi-peer server; client that runs as any `--name` |
 | `boot/genesis.py` | A node's first capsule |
 | `edge/upgrade.py`, `edge/sc_edge.json` | Stripped ESP-NOW wire form (≤16/32/120-char fields) and conversion |
 | `agents/` | `EchoAgent`, `RelayAgent` |
-| `hal/` | `FileTransport`, `SocketTransport`, clock, storage re-export |
+| `hal/` | `FileTransport`, `SocketTransport`, `SocketListener` (many peers), clock, storage re-export |
 | `NOTES.md` | Design state, deferred work, open questions |
 
 ### Leighton Weight in one paragraph
@@ -168,29 +180,37 @@ your own evidence count and decay clock. Never store it as your opinion.
   idle time returns it to unknown.
 - **Edge round-trip.** A stripped ESP32 message upgrades to a full capsule and
   downgrades back to the identical stripped form.
-- **Two processes talk.** `run_alice.py` and `run_bob.py` handshake over TCP, pin each other's
-  keys, and exchange a signed capsule and a signed ACK. Every ledger record on both sides is
-  signed, and both sides compute identical digests for the same capsules.
+- **Several nodes talk at once.** Alice serves concurrent sessions over TCP. Each peer pins
+  keys, exchanges a signed capsule and a signed ACK, and gets its own reply. Every ledger record
+  is signed, and both ends compute identical digests for the same capsules.
 - **Rejections are tested.** `Peer.recv` rejects, and `tests/test_peer.py` proves:
-  - capsules before a hello
+  - capsules before a hello, even from a pinned agent
+  - a hello whose signature doesn't match its offered key (it never gets pinned)
   - tampered content
   - a new key for a pinned agent
   - a signer label that differs from `from`
   - capsules addressed to someone else
-  - sending as another agent
+  - another agent's capsule on a session bound to a different peer
+  - replays, including a replayed hello and a replay after a restart
+  - expired capsules
+- **Thread-safe core.** Store, pins and socket sends are locked. Tests hammer a shared store and
+  a shared node from 8 threads and check that every record reads back exactly.
 - **Small dependency surface.** `jsonschema` and `cryptography`, nothing else.
 
 ### The bad — known limits, by design for now
 
-- **One machine, one peer, one session.** The two-process run uses localhost. `run_alice.py`
-  serves one peer and exits when it disconnects. The socket link is point-to-point, and `peer`
-  in `send()` isn't used for routing. Bob doesn't reconnect mid-session.
+- **One machine, star topology.** Everything so far ran on localhost. Clients talk only to Alice.
+  There's no relaying between Bob and Carol, and a reply for an agent with no open session is
+  stored but not delivered (no queue). Clients don't reconnect mid-session.
+- **One lock for dispatch.** Alice runs the scheduler under a single node lock, so capsules are
+  processed one at a time. One thread per connection is fine for a handful of peers, not hundreds.
 - **Trust on first use is only as good as first contact.** Whoever says hello first as
   `agent://bob` gets pinned as Bob. There's no registry or root of trust, and no way to rotate a key.
   Genesis doesn't create or announce a key; `peer.py` does.
-- **Replays aren't detected.** A captured signed capsule verifies again if resent. The store
-  ignores the duplicate, but the scheduler would dispatch it again. Nonces, sequence numbers or
-  seen-id tracking would fix it.
+- **Replay protection depends on the ledger.** A capsule is a replay if its digest is already
+  stored. Pruning only drops capsules past their TTL, and expired capsules are rejected anyway, so
+  the window is closed while the ledger is intact. Delete or hand-edit a ledger and replays inside
+  their TTL get through.
 - **Signing lives outside the kernel.** `Peer` signs and stores signed records. `demo.py` and
   `Scheduler` used alone still store unsigned replies.
 - **Outcomes have nowhere to come from.** `record_outcome` is only called by the demo.
@@ -202,8 +222,8 @@ your own evidence count and decay clock. Never store it as your opinion.
   interpreter, merge and scheduler have no asserting tests; their check is the demo trace.
 - **Hints aren't wired in.** Nothing fills a capsule's `epistemic` block from the sender's
   opinion, and the scheduler never calls `blend`.
-- **Scale.** `store.get` scans the file line by line. There's no file locking, so
-  two processes must not share one store file.
+- **Scale.** `store.get` scans the file line by line. Locks are per process: two processes must
+  not share one store file or one pins file.
 - **Tunables with no definition yet.** `stakes_factor` means nothing concrete. The stance bands are
   lopsided: from unknown, 2 successes reach `leaning_trusted` but 1 failure reaches `unclear`.
 
@@ -220,10 +240,11 @@ your own evidence count and decay clock. Never store it as your opinion.
 ## Roadmap
 
 1. ~~Fix `SocketTransport` framing.~~ Done.
-2. ~~Two-process test.~~ Done on one machine; next, two machines.
+2. ~~Two-process test.~~ ~~Three nodes.~~ Done on one machine; next, two machines.
 3. Identity binding: ~~trust on first use~~ done; key registry or root of trust, key rotation.
-4. Replay protection.
-5. Outcome field on `task_result` capsules, wired into `record_outcome`.
-6. Asserting tests for validator, interpreter, merge and scheduler.
+4. ~~Replay protection.~~ Done.
+5. Relaying between peers and a queue for undelivered replies.
+6. Outcome field on `task_result` capsules, wired into `record_outcome`.
+7. Asserting tests for validator, interpreter, merge and scheduler.
 
 See [CHANGELOG.md](CHANGELOG.md) for history and [NOTES.md](NOTES.md) for open design questions.

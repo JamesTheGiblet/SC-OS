@@ -8,6 +8,7 @@ capsule stored unsigned adds a new line that supersedes the old one.
 """
 
 import json
+import threading
 from pathlib import Path
 from typing import Iterator
 from datetime import datetime, timezone
@@ -22,6 +23,7 @@ class Store:
             self.path.touch()
         self._index: dict[str, int] = {}   # digest -> physical line number
         self._next_line = 0
+        self._lock = threading.RLock()     # one writer at a time within a process
         self._load_index()
 
     def _load_index(self) -> None:
@@ -46,6 +48,10 @@ class Store:
         d = digest(capsule_wire)
         if envelope is not None and digest(envelope["capsule"]) != d:
             raise ValueError("envelope does not wrap this capsule")
+        with self._lock:
+            return self._append_locked(d, capsule_wire, envelope)
+
+    def _append_locked(self, d: str, capsule_wire: dict, envelope: dict | None) -> str:
         if d in self._index:
             rec = self.get_record(d)
             if envelope is None or (rec is not None and "envelope" in rec):
@@ -69,14 +75,15 @@ class Store:
 
     def get_record(self, digest_hex: str) -> dict | None:
         """Full record: digest, stored_at, capsule, and envelope if signed."""
-        if digest_hex not in self._index:
+        with self._lock:
+            if digest_hex not in self._index:
+                return None
+            target = self._index[digest_hex]
+            with self.path.open() as f:
+                for i, line in enumerate(f):
+                    if i == target:
+                        return json.loads(line)
             return None
-        target = self._index[digest_hex]
-        with self.path.open() as f:
-            for i, line in enumerate(f):
-                if i == target:
-                    return json.loads(line)
-        return None
 
     def get(self, digest_hex: str) -> dict | None:
         rec = self.get_record(digest_hex)
@@ -90,7 +97,8 @@ class Store:
         return {"capsule": rec["capsule"], **rec["envelope"]}
 
     def has(self, digest_hex: str) -> bool:
-        return digest_hex in self._index
+        with self._lock:
+            return digest_hex in self._index
 
     def all(self) -> Iterator[dict]:
         for rec in self.records():
@@ -98,7 +106,10 @@ class Store:
 
     def prune_expired(self, now: datetime | None = None) -> int:
         """Remove capsules whose action_hints.ttl_seconds has passed."""
-        now = now or datetime.now(timezone.utc)
+        with self._lock:
+            return self._prune_locked(now or datetime.now(timezone.utc))
+
+    def _prune_locked(self, now: datetime) -> int:
         keep: list[dict] = []
         dropped = 0
         for rec in self.records():
@@ -125,16 +136,19 @@ class Store:
 
     def records(self) -> Iterator[dict]:
         """Current full records in log order; superseded and unreadable lines skipped."""
-        with self.path.open() as f:
-            for lineno, line in enumerate(f):
-                if not line.strip():
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if self._index.get(rec.get("digest")) == lineno:
-                    yield rec
+        with self._lock:                      # snapshot, so iteration never holds the lock
+            with self.path.open() as f:
+                lines = f.readlines()
+            index = dict(self._index)
+        for lineno, line in enumerate(lines):
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if index.get(rec.get("digest")) == lineno:
+                yield rec
 
     def __len__(self) -> int:
         return len(self._index)

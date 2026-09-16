@@ -5,6 +5,7 @@ Swap implementations without touching the kernel.
 
 import json
 import socket
+import threading
 from pathlib import Path
 from typing import Protocol
 
@@ -53,13 +54,20 @@ class SocketTransport:
 
     Point-to-point: one peer at a time; `peer` in send() is not used for
     routing. A listener that loses its peer accepts the next connection.
+    For many peers at once, use SocketListener: one SocketTransport per
+    accepted connection.
+
+    send() is safe to call from several threads; recv() belongs to one reader.
     """
 
-    def __init__(self, mode: str, host: str, port: int):
+    def __init__(self, mode: str, host: str = "", port: int = 0):
         self.mode = mode
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.conn: socket.socket | None = None
         self._buf = b""
+        self._send_lock = threading.Lock()
+        if mode == "accepted":      # built by from_connection()
+            return
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         if mode == "listen":
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.sock.bind((host, port))
@@ -70,14 +78,24 @@ class SocketTransport:
         else:
             raise ValueError("mode must be listen or connect")
 
+    @classmethod
+    def from_connection(cls, conn: socket.socket) -> "SocketTransport":
+        """Wrap one already-accepted connection. Closed for good when it drops."""
+        t = cls("accepted")
+        t.sock = conn
+        t.conn = conn
+        return t
+
     def _ensure_conn(self) -> socket.socket:
         if self.conn is None:
+            if self.mode != "listen":
+                raise ConnectionError("connection closed")
             self.conn, _ = self.sock.accept()
             self._buf = b""
         return self.conn
 
     def _drop_conn(self) -> None:
-        if self.mode == "listen" and self.conn is not None:
+        if self.mode in ("listen", "accepted") and self.conn is not None:
             self.conn.close()
             self.conn = None
         self._buf = b""
@@ -86,12 +104,13 @@ class SocketTransport:
         payload = (json.dumps(envelope, separators=(",", ":")) + "\n").encode()
         if len(payload) > MAX_FRAME_BYTES:
             raise ValueError(f"envelope is {len(payload)} bytes, max {MAX_FRAME_BYTES}")
-        conn = self._ensure_conn()
-        try:
-            conn.sendall(payload)
-        except OSError:
-            self._drop_conn()
-            raise
+        with self._send_lock:
+            conn = self._ensure_conn()
+            try:
+                conn.sendall(payload)
+            except OSError:
+                self._drop_conn()
+                raise
 
     def recv(self) -> tuple[str, dict]:
         conn = self._ensure_conn()
@@ -117,4 +136,27 @@ class SocketTransport:
         if self.conn is not None and self.conn is not self.sock:
             self.conn.close()
         self.conn = None
+        self.sock.close()
+
+
+class SocketListener:
+    """Accepts many peers. Each accept() returns its own SocketTransport."""
+
+    def __init__(self, host: str, port: int, poll_seconds: float = 1.0):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind((host, port))
+        self.sock.listen(16)
+        self.sock.settimeout(poll_seconds)   # so the accept loop can notice shutdown
+
+    def accept(self) -> tuple[SocketTransport, tuple] | None:
+        """A new connection, or None if none arrived within poll_seconds."""
+        try:
+            conn, addr = self.sock.accept()
+        except TimeoutError:
+            return None
+        conn.settimeout(socket.getdefaulttimeout())
+        return SocketTransport.from_connection(conn), addr
+
+    def close(self) -> None:
         self.sock.close()
