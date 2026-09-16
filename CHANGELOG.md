@@ -4,8 +4,8 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
 
 ## [Unreleased]
 
-Since v0.1: several nodes over TCP, identity, replay protection, a SQLite ledger, and fixes
-for bugs that only showed up across a process boundary.
+Since v0.1: several nodes over TCP, identity, replay protection, a SQLite ledger,
+self-description capsules, and fixes for bugs that only showed up across a process boundary.
 
 ### Added
 
@@ -44,13 +44,14 @@ for bugs that only showed up across a process boundary.
   `ingest()`. Ids come from content, so an unchanged rerun stores nothing, and a changed file's new
   capsule has `derived_from` pointing at the previous version. `--show [TOPIC]` prints the current
   description, `--dry-run` previews, `--no-tests` skips running tests without erasing old results.
-  First run: 43 capsules, all tests PASSED. `tests/test_self_describe.py` (6).
+  First run: 43 capsules, all tests PASSED.
 - **`Store.find(topic=, sender=, receiver=, capsule_id=, unexpired_at=)`** queries the indexed
   columns.
 - **`python -m store import <jsonl> <db>`** migrates pre-SQLite ledgers, keeping stored times and
   signatures, so migrated history still blocks replays.
 - **Tests with asserts.** `tests/test_store.py` (15), `tests/test_transport.py` (9, real localhost
-  TCP), `tests/test_peer.py` (17). `tests/test_weight.py` asserts the sharing rule.
+  TCP), `tests/test_peer.py` (17), `tests/test_self_describe.py` (6). `tests/test_weight.py`
+  asserts the sharing rule.
 - `README.md` (with a "why capsules" section), this changelog, and rewritten `NOTES.md`
   recording design decisions and open questions.
 
@@ -115,6 +116,8 @@ for bugs that only showed up across a process boundary.
 - The trust boundary is tested from the attacker's side: forged hellos, tampering, key changes,
   label mismatches, misaddressing, cross-session capsules, replays and expiry.
 - The ledger proves who said what on its own, and lookups stay fast as it grows.
+- SC-OS describes its own code, tests, decisions and limits in its own format, generated from the
+  source so the description can't drift, with every test file passing when last described.
 
 ### The bad
 
@@ -123,6 +126,7 @@ for bugs that only showed up across a process boundary.
 - Trust on first use trusts whoever arrives first; no registry, no key rotation.
 - SQLite files are ~1.3× the old JSON Lines size, and nothing prunes on a schedule.
 - Validator, interpreter, merge and scheduler still have no asserting tests.
+- The self-description isn't shared with peers, expires after 7 days, and nothing reruns it.
 
 ### The ugly
 
@@ -130,6 +134,10 @@ for bugs that only showed up across a process boundary.
   only `Peer.recv` checks it.
 - `merge` builds an unaddressable sender (`agent://alice+agent://bob`).
 - Agent replies and edge upgrades don't set `derived_from`; `Provenance.signature` is always null.
+- Self-description finds decisions, questions and limits by heading name; rename a heading and
+  that capsule silently vanishes or reports zero items.
+- `demo.py` crashes with `UnicodeEncodeError` on `→` when stdout is cp1252 (Git Bash pipes on
+  Windows). PowerShell and file redirection are fine.
 
 ## [v0.1] — 2026-09-16
 

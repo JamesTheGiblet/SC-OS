@@ -5,9 +5,10 @@ A capsule carries claims with confidence, relations between entities, what the s
 doesn't know, where the claim came from, and how urgently to act on it.
 The "OS" is the kernel that routes capsules between agents; the capsule protocol is the core.
 
-**Status: v0.1 plus multi-node sessions.** A server node handles several peers at once over TCP,
-with signed capsules, pinned keys, replay protection and a SQLite ledger. Tested with three
-nodes on one machine; it hasn't crossed two machines yet.
+**Status: v0.1 plus multi-node sessions and self-description.** A server node handles several
+peers at once over TCP, with signed capsules, pinned keys, replay protection and a SQLite ledger.
+SC-OS also records its own code, docs and test results as capsules. Tested with three nodes on
+one machine; it hasn't crossed two machines yet.
 Read [the good, the bad, and the ugly](#the-good-the-bad-and-the-ugly) before building on it.
 
 ## Why capsules
@@ -268,6 +269,10 @@ your own evidence count and decay clock. Never store it as your opinion.
   idle time returns it to unknown.
 - **Edge round-trip.** A stripped ESP32 message upgrades to a full capsule and
   downgrades back to the identical stripped form.
+- **The system knows what it's made of.** `self_describe.py` turns every Python file, test,
+  design decision, open question and known limit into signed capsules that pass the same
+  validation as any other. Test results come from actually running the tests. Because ids follow
+  content, a rerun stores only what changed, and each file's versions chain through `derived_from`.
 - **Small dependency surface.** `jsonschema` and `cryptography`, plus Python's own `sqlite3`.
 
 ### The bad — known limits, by design for now
@@ -296,9 +301,12 @@ your own evidence count and decay clock. Never store it as your opinion.
   opinion, and the scheduler never calls `blend`.
 - **Stubs.** `_escalate`, `_handle_task_result` and `_handle_threshold` all just ACK.
   `boot/discovery.py` (reads `peers.json`), `RelayAgent` and `hal/clock.py` are unused.
-- **Tests cover the edges, not the kernel.** Store, transport and peer tests assert.
-  `tests/test_weight.py` mostly prints; only its sharing-rule section asserts. Validator,
+- **Tests cover the edges, not the kernel.** Store, transport, peer and self-describe tests
+  assert. `tests/test_weight.py` mostly prints; only its sharing-rule section asserts. Validator,
   interpreter, merge and scheduler have no asserting tests; their check is the demo trace.
+- **The self-description stays home and must be refreshed.** `self.*` capsules live only in
+  `store/self.db`; no node sends them to peers. They expire after 7 days, and nothing reruns
+  `self_describe.py` automatically.
 - **Tunables with no definition yet.** `stakes_factor` means nothing concrete. The stance bands are
   lopsided: from unknown, 2 successes reach `leaning_trusted` but 1 failure reaches `unclear`.
 
@@ -311,6 +319,14 @@ your own evidence count and decay clock. Never store it as your opinion.
   `derived_from`. `Provenance.signature` is always `null` and unrelated to the envelope signature.
 - **Merged sender is a string join.** `merge` produces `agent://alice+agent://bob`,
   which isn't an addressable agent.
+- **Self-description parses doc headings by name.** Decisions, open questions, next steps and
+  limits are read from `## Decisions`, `## Open questions`, `## Next` in `NOTES.md` and
+  `### The bad` / `### The ugly` in this README. Rename a heading and that capsule silently
+  disappears, or `self.open_questions` records "0 open questions".
+- **Arrows crash on some Windows consoles.** `render()` prints `•` and `→`. When stdout is cp1252,
+  as when Git Bash pipes Python's output, `demo.py` stops with `UnicodeEncodeError`.
+  PowerShell and file redirection work; `self_describe.py` forces UTF-8 itself.
+  Workaround: `PYTHONIOENCODING=utf-8`.
 
 ## Roadmap
 
@@ -322,5 +338,7 @@ your own evidence count and decay clock. Never store it as your opinion.
 6. Outcome field on `task_result` capsules, wired into `record_outcome`.
 7. Relaying between peers and a queue for undelivered replies.
 8. Asserting tests for validator, interpreter, merge and scheduler.
+9. ~~Self-description capsules.~~ Done. Next: share them with peers after the hello, and decide
+   whether passing test results count as outcomes.
 
 See [CHANGELOG.md](CHANGELOG.md) for history and [NOTES.md](NOTES.md) for design decisions and open questions.
