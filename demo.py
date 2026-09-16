@@ -52,9 +52,10 @@ print(f"  shared predicates: {sorted(agreed['predicates'])}")
 
 # --- store ---
 print("\n[3] Store")
-demo_log = Path("./store/demo.log")
-demo_log.unlink(missing_ok=True)   # demo only: start each run clean
-store = Store(str(demo_log))
+demo_db = Path("./store/demo.db")
+for f in (demo_db, Path(f"{demo_db}-wal"), Path(f"{demo_db}-shm")):
+    f.unlink(missing_ok=True)      # demo only: start each run clean
+store = Store(str(demo_db))
 print(f"  store path: {store.path}")
 print(f"  initial size: {len(store)}")
 

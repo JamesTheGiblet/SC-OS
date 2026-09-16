@@ -109,7 +109,7 @@ def main() -> int:
     started = datetime.now(timezone.utc).isoformat()
 
     log(f"genesis: {render(genesis('alice')).splitlines()[0]}")
-    store = Store("store/alice.log")
+    store = Store("store/alice.db")
     node = Node(ME, store)
     server = Server(node, Scheduler(agents={ME: EchoAgent()}, store=store))
     listener = SocketListener(args.host, args.port)

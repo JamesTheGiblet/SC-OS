@@ -1,8 +1,10 @@
 """
-Store: exact round-trip, duplicates, reopen, pruning.
+Store (SQLite): exact round-trip, duplicates, reopen, pruning, signatures,
+indexed columns, JSONL import, concurrent writers.
 Run from the project root: python tests/test_store.py
 """
 
+import sqlite3
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -25,7 +27,7 @@ def capsule(n: int, ttl: int, created: datetime = T0) -> dict:
 
 
 def new_store() -> Store:
-    return Store(str(Path(tempfile.mkdtemp()) / "s.log"))
+    return Store(str(Path(tempfile.mkdtemp()) / "s.db"))
 
 
 def test_get_returns_what_was_appended():
@@ -115,7 +117,7 @@ def test_envelope_for_other_capsule_rejected():
     assert len(s) == 0
 
 
-def test_prune_after_supersede_keeps_one_signed_line():
+def test_prune_after_signing_keeps_one_signed_row():
     s = new_store()
     c = capsule(1, 86400)
     wire, _ = signed(c)
@@ -123,9 +125,96 @@ def test_prune_after_supersede_keeps_one_signed_line():
     s.append(c, envelope=wire)
     s.append(capsule(2, 60))
     assert s.prune_expired(now=T0 + timedelta(hours=1)) == 1
-    lines = [l for l in s.path.read_text().splitlines() if l.strip()]
-    assert len(lines) == 1
+    rows = sqlite3.connect(s.path).execute("SELECT digest, sig FROM capsules").fetchall()
+    assert rows == [(d, wire["sig"])]
     assert s.envelope_of(d) == wire
+
+
+def test_prune_gives_space_back():
+    s = new_store()
+    pad = "x" * 2000
+    for i in range(1500):
+        c = capsule(i, 60 if i % 3 else 86400)
+        c["pad"] = pad
+        s.append(c)
+    s._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    full = s.path.stat().st_size
+    assert s.prune_expired(now=T0 + timedelta(hours=1)) == 1000
+    assert len(s) == 500
+    assert s.path.stat().st_size < full * 0.5, (full, s.path.stat().st_size)
+
+
+def test_signing_keeps_original_stored_at_and_order():
+    s = new_store()
+    a, b = capsule(1, 60), capsule(2, 60)
+    da = s.append(a)
+    db = s.append(b)
+    before = s.get_record(da)["stored_at"]
+    s.append(a, envelope=signed(a)[0])
+    assert s.get_record(da)["stored_at"] == before
+    assert [r["digest"] for r in s.records()] == [da, db]
+
+
+def test_indexed_columns_are_queryable():
+    s = new_store()
+    c = {"id": "urn:uuid:x", "created": T0.isoformat(), "from": "agent://bob",
+         "to": "agent://alice", "intent": "inform", "semantics": {"topic": "supply_chain_risk"},
+         "action_hints": {"ttl_seconds": 60}}
+    d = s.append(c)
+    db = sqlite3.connect(s.path)
+    row = db.execute("SELECT capsule_id, sender, receiver, topic, intent, expires_at "
+                     "FROM capsules WHERE digest = ?", (d,)).fetchone()
+    assert row == ("urn:uuid:x", "agent://bob", "agent://alice", "supply_chain_risk",
+                   "inform", T0.timestamp() + 60)
+    assert db.execute("SELECT json_extract(capsule, '$.semantics.topic') FROM capsules").fetchone() \
+        == ("supply_chain_risk",)
+
+
+def test_import_jsonl_keeps_history_and_signatures():
+    import json
+    c1, c2 = capsule(1, 60), capsule(2, 60)
+    wire2, _ = signed(c2)
+    from envelope import digest
+    d1, d2 = digest(c1), digest(c2)
+    src = Path(tempfile.mkdtemp()) / "old.log"
+    lines = [
+        {"digest": d1, "stored_at": "2026-09-01T00:00:01+00:00", "capsule": c1},
+        {"digest": d2, "stored_at": "2026-09-01T00:00:02+00:00", "capsule": c2},
+        {"digest": d2, "stored_at": "2026-09-01T00:00:03+00:00", "capsule": c2,
+         "envelope": {k: wire2[k] for k in ("sig", "alg", "pubkey_id")}},
+        "not json",
+    ]
+    src.write_text("\n".join(l if isinstance(l, str) else json.dumps(l) for l in lines) + "\n")
+    s = new_store()
+    assert s.import_jsonl(str(src)) == 2
+    assert s.get_record(d1)["stored_at"] == "2026-09-01T00:00:01+00:00"
+    assert s.get_record(d2)["stored_at"] == "2026-09-01T00:00:02+00:00"
+    assert s.envelope_of(d1) is None
+    assert s.envelope_of(d2) == wire2
+    assert s.import_jsonl(str(src)) == 2           # idempotent
+
+
+def test_two_connections_to_one_file():
+    import threading
+    s1 = new_store()
+    s2 = Store(str(s1.path))
+    digests: list[str] = []
+    lock = threading.Lock()
+
+    def writer(store, base):
+        for i in range(100):
+            d = store.append(capsule(base + i, 60))
+            with lock:
+                digests.append(d)
+
+    threads = [threading.Thread(target=writer, args=(st, base))
+               for st, base in ((s1, 0), (s2, 10_000), (s1, 20_000), (s2, 30_000))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(s1) == len(s2) == 400
+    assert all(s2.has(d) for d in digests)
 
 
 def test_concurrent_appends_keep_index_exact():

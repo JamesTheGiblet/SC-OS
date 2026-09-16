@@ -1,6 +1,6 @@
 # SC-OS v0.1 — state of the system
 
-Reference run: `python demo.py`, then `python -m store store/demo.log`.
+Reference run: `python demo.py`, then `python -m store store/demo.db`.
 
 ## What works (proven by the demo.py trace)
 - genesis, handshake, sign, verify (and rejects a wrong key), ingest, merge, dispatch

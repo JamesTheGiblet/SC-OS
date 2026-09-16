@@ -4,3 +4,6 @@ store/*.log
 store/*.tmp
 keys/
 store/*.json
+store/*.db
+store/*.db-wal
+store/*.db-shm

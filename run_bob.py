@@ -63,7 +63,7 @@ def main() -> int:
         print(f"{prefix}{msg}", flush=True)
 
     log(f"genesis: {render(genesis(args.name)).splitlines()[0]}")
-    store = Store(f"store/{args.name}.log")
+    store = Store(f"store/{args.name}.db")
     transport = connect(args.host, args.port)
     peer = Node(me, store).session(transport)
     log(f"connected to {args.host}:{args.port}")

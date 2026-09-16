@@ -55,7 +55,7 @@ def pipes():
 
 def make_node(agent_id, root: Path, key_dir: str = "keys") -> Node:
     name = agent_id[8:]
-    return Node(agent_id, Store(str(root / f"{name}.log")),
+    return Node(agent_id, Store(str(root / f"{name}.db")),
                 key_dir=str(root / key_dir), pins_path=str(root / f"{name}.pins.json"))
 
 

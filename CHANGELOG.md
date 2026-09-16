@@ -54,6 +54,20 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
 
 ### Changed
 
+- **Capsule storage moved to SQLite.** `store.py` keeps the same `Store` API on one database
+  file per node (`store/<name>.db`, WAL mode). Each capsule is a row: JSON body, unique digest,
+  stored time, signature columns, and indexed `capsule_id`, `sender`, `receiver`, `topic`,
+  `intent` and `expires_at`.
+  - Signing a capsule already stored unsigned updates its row, keeping its original
+    `stored_at` and position, instead of appending a superseding line.
+  - `prune_expired` is a `DELETE`, and incremental vacuum returns the space to the disk.
+  - Several processes can open the same store.
+  - `python -m store import <jsonl> <db>` migrates old ledgers, keeping stored times and
+    signatures. Migrated history still blocks replays.
+  - Measured at 20,000 signed capsules, JSONL → SQLite: lookup 48 ms → 0.06 ms,
+    open 351 ms → 7 ms, append 1,646/s → 1,462/s, prune of half 941 ms → 976 ms,
+    disk 19.7 MB → 25.3 MB (14.2 MB after pruning half).
+  - Callers now use `.db` paths. `store/*.db*` is git-ignored.
 - `peer.py` split into `Node` (one agent's key, pins, ledger and lock, shared by all its
   sessions) and `Peer` (one session). Create sessions with `Node(...).session(transport)`.
 - Run-script timings are labelled for what they measure: Bob logs a full `cycle` (sign, send,

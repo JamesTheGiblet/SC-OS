@@ -17,10 +17,10 @@ Requires Python 3.10+.
 ```sh
 pip install -r requirements.txt
 python demo.py                     # end-to-end run, 11 steps
-python -m store store/demo.log     # print the ledger the demo wrote (add --full for JSON)
+python -m store store/demo.db      # print the ledger the demo wrote (add --full for JSON)
 ```
 
-`demo.py` deletes `store/demo.log` at startup so each run begins empty.
+`demo.py` deletes `store/demo.db` at startup so each run begins empty.
 Digests differ between runs because every capsule gets a fresh UUID and timestamp.
 
 ### Multiple nodes: Alice, Bob, Carol
@@ -42,9 +42,11 @@ Clients retry the connection for 10 seconds. A session goes:
 3. Bob sends a signed capsule. Alice verifies and validates it, then runs it through the scheduler.
 4. Alice sends a signed ACK that points back to Bob's capsule. Bob verifies it.
 
-Each side keeps its ledger in `store/<name>.log`, its pins in `store/<name>.pins.json`,
+Each side keeps its ledger in `store/<name>.db` (SQLite), its pins in `store/<name>.pins.json`,
 and its private key in `keys/<name>.ed25519` (git-ignored). Ledgers and pins persist,
-so later runs append and must present the same keys. The log says `first contact, key pinned`
+so later runs append and must present the same keys. Ledgers from before the SQLite switch
+import with `python -m store import store/<name>.log store/<name>.db`, keeping stored times,
+signatures and therefore replay protection. The log says `first contact, key pinned`
 or `key matches pin`. Delete `store/<name>.pins.json` to forget a peer.
 
 Every connection starts with exactly one hello in each direction. That's deliberate: a peer
@@ -136,7 +138,7 @@ capsule ──to_wire──► dict ──sign──► envelope {capsule, sig, 
 | `validator.py` | JSON Schema + version, clock skew (30s future, 7d past), vocab, coherence, staleness checks |
 | `interpreter.py` | `to_wire` / `from_wire`, `ingest`, `merge`, `actionable`, `render` |
 | `envelope.py` | Canonical JSON, SHA-256 `digest`, Ed25519 `sign` / `verify` |
-| `store.py` | Append-only JSON Lines ledger keyed by digest; `python -m store <path>` dumps it |
+| `store.py` | SQLite ledger keyed by digest, with indexed sender/receiver/topic/expiry; `python -m store <db>` dumps it, `python -m store import <jsonl> <db>` migrates old ledgers |
 | `scheduler.py` | Kernel: stores in and out, routes by trigger, `record_outcome` feeds opinions |
 | `weight.py` | Leighton Weight: exponential decay, `Opinion` (value + weight), `blend` |
 | `handshake.py` | Hello capsule, version and predicate negotiation |
@@ -166,8 +168,10 @@ your own evidence count and decay clock. Never store it as your opinion.
 
 - **Trust boundary.** Ed25519 over canonical JSON (sorted keys, no whitespace).
   A signature verifies with the right key and fails with the wrong one.
-- **Exact store.** `store.get(digest)` returns exactly what was hashed. Duplicate appends
-  are no-ops. The index survives reopening the file.
+- **Exact, indexed store.** One SQLite file per node. `store.get(digest)` returns exactly what
+  was hashed, by index: 0.06 ms at 20,000 capsules, where the old JSON Lines file took 48 ms
+  to scan. Duplicate appends are no-ops. Capsules stay plain JSON, so `sqlite3` and
+  `json_extract` can query them. Several processes can safely open one store.
 - **Two-way ledger.** Incoming capsules and outgoing replies are both stored.
   Scheduler replies carry `derived_from` pointing at their parent. Signed capsules keep
   their signature in the store, and `store.envelope_of(digest)` verifies from the ledger alone.
@@ -222,8 +226,11 @@ your own evidence count and decay clock. Never store it as your opinion.
   interpreter, merge and scheduler have no asserting tests; their check is the demo trace.
 - **Hints aren't wired in.** Nothing fills a capsule's `epistemic` block from the sender's
   opinion, and the scheduler never calls `blend`.
-- **Scale.** `store.get` scans the file line by line. Locks are per process: two processes must
-  not share one store file or one pins file.
+- **Storage grows until pruned.** SQLite makes lookups fast, not files small: at 20,000 capsules
+  the database is about 25 MB, roughly 1.3× the old JSON Lines file, because of its indexes.
+  Size is controlled by `Store.prune_expired()`, which deletes expired rows and gives the space
+  back, but nothing calls it on a schedule yet. Pins are still a JSON file per node, which two
+  processes must not share.
 - **Tunables with no definition yet.** `stakes_factor` means nothing concrete. The stance bands are
   lopsided: from unknown, 2 successes reach `leaning_trusted` but 1 failure reaches `unclear`.
 
