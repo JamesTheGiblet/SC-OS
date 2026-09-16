@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-capsule.dev/sc_edge.json",
+  "title": "Stripped Edge Capsule (ESP-NOW)",
+  "type": "object",
+  "required": ["v", "id", "to", "i", "t", "c", "s", "tr"],
+  "additionalProperties": false,
+  "properties": {
+    "v":  { "type": "string", "const": "1.0" },
+    "id": { "type": "string", "maxLength": 16 },
+    "to": { "type": "string", "maxLength": 16 },
+    "i":  { "type": "string", "enum": ["inform", "request", "query", "confirm", "refuse", "ack"] },
+    "t":  { "type": "string", "maxLength": 32 },
+    "c":  { "type": "number", "minimum": 0, "maximum": 1 },
+    "s":  { "type": "string", "maxLength": 120 },
+    "tr": {
+      "type": "string",
+      "enum": ["task", "task_result", "threshold", "stuck", "heartbeat", "announce"]
+    }
+  }
+}

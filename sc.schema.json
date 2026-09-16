@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-capsule.dev/sc.schema.json",
+  "title": "Semantic Capsule",
+  "type": "object",
+  "required": ["capsule_version", "id", "created", "from", "to", "intent", "semantics"],
+  "additionalProperties": false,
+  "properties": {
+    "capsule_version": { "type": "string", "pattern": "^\\d+\\.\\d+$" },
+    "id": { "type": "string", "pattern": "^urn:uuid:[0-9a-fA-F-]{36}$" },
+    "created": { "type": "string", "format": "date-time" },
+    "from": { "$ref": "#/$defs/agentId" },
+    "to":   { "$ref": "#/$defs/agentId" },
+    "intent": {
+      "type": "string",
+      "enum": ["inform", "request", "query", "confirm", "refuse", "ack"]
+    },
+    "trigger": {
+      "type": "string",
+      "enum": ["none", "task", "task_result", "threshold", "stuck", "heartbeat", "announce"]
+    },
+    "semantics": { "$ref": "#/$defs/semantics" },
+    "provenance": { "$ref": "#/$defs/provenance" },
+    "action_hints": { "$ref": "#/$defs/actionHints" },
+    "epistemic": { "$ref": "#/$defs/epistemic" }
+  },
+  "$defs": {
+    "agentId": { "type": "string", "pattern": "^agent://[a-zA-Z0-9._-]+$" },
+    "semantics": {
+      "type": "object",
+      "required": ["topic"],
+      "additionalProperties": false,
+      "properties": {
+        "topic": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "claims": { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/claim" } },
+        "relations": { "type": "array", "items": { "$ref": "#/$defs/relation" } },
+        "uncertainty": { "$ref": "#/$defs/uncertainty" }
+      }
+    },
+    "claim": {
+      "type": "object",
+      "required": ["statement", "type", "confidence"],
+      "additionalProperties": false,
+      "properties": {
+        "statement": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "type": {
+          "type": "string",
+          "enum": ["observation", "inference", "assumption", "directive"]
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "evidence": { "type": "array", "items": { "type": "string", "maxLength": 512 } },
+        "valid_until": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "relation": {
+      "type": "object",
+      "required": ["subject", "predicate", "object"],
+      "additionalProperties": false,
+      "properties": {
+        "subject":   { "type": "string", "minLength": 1 },
+        "predicate": { "type": "string", "pattern": "^[a-z_]+$" },
+        "object":    { "type": "string", "minLength": 1 }
+      }
+    },
+    "uncertainty": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "known_unknowns": { "type": "array", "items": { "type": "string" } },
+        "assumptions":    { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "derived_from": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^urn:uuid:" }
+        },
+        "method": { "type": "string", "enum": ["synthesis", "merge", "relay", "observation"] },
+        "signature": { "type": ["string", "null"] }
+      }
+    },
+    "actionHints": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "priority":     { "type": "string", "enum": ["low", "normal", "high"] },
+        "ttl_seconds":  { "type": "integer", "minimum": 1, "maximum": 604800 },
+        "requires_ack": { "type": "boolean" }
+      }
+    },
+    "epistemic": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "value":  { "type": "number", "minimum": -2, "maximum": 2 },
+        "weight": { "type": "number", "minimum": 0 },
+        "evidence_count": { "type": "integer", "minimum": 0 },
+        "last_tested": { "type": ["string", "null"], "format": "date-time" }
+      }
+    }
+  }
+}

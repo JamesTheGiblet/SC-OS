@@ -1,0 +1,13 @@
+{
+  "vocab_version": "1.0",
+  "predicates": {
+    "affects":      { "subject": "entity", "object": "entity" },
+    "causes":       { "subject": "event",  "object": "event" },
+    "depends_on":   { "subject": "entity", "object": "entity" },
+    "contradicts":  { "subject": "claim",  "object": "claim" },
+    "supports":     { "subject": "evidence", "object": "claim" }
+  },
+  "claim_types": ["observation", "inference", "assumption", "directive"],
+  "intents": ["inform", "request", "query", "confirm", "refuse", "ack"],
+  "triggers": ["none", "task", "task_result", "threshold", "stuck", "heartbeat", "announce"]
+}
