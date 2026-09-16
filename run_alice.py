@@ -51,7 +51,8 @@ def main() -> int:
         remote = remote_hello.sender
         local_hello = peer.hello(remote)
         agreed = negotiate(local_hello, remote_hello)
-        log(f"hello from {remote}, key pinned; agreed capsule_version={agreed['capsule_version']} "
+        pin = "first contact, key pinned" if peer.last_pin == "new" else "key matches pin"
+        log(f"hello from {remote}, {pin}; agreed capsule_version={agreed['capsule_version']} "
             f"vocab={agreed['vocab_version']} predicates={len(agreed['predicates'])}")
         peer.send(local_hello)
 
@@ -61,8 +62,9 @@ def main() -> int:
             except ConnectionError:
                 log("peer disconnected")
                 break
-            skew = (datetime.now(timezone.utc) - c.created).total_seconds()
-            log(f"recv verified ({skew * 1000:.1f} ms after created):")
+            age = (datetime.now(timezone.utc) - c.created).total_seconds()
+            log(f"recv verified ({age * 1000:.1f} ms since {c.sender} created it: "
+                f"their sign + send + our verify):")
             for line in render(c).splitlines():
                 log(f"  {line}")
             for r in sched.dispatch(c):

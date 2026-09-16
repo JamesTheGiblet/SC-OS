@@ -153,8 +153,12 @@ def test_cannot_send_as_someone_else():
 
 def test_pins_persist_across_restart():
     root, alice, bob, ta, _ = session()
+    assert alice.last_pin == "new"
     alice2 = node(ALICE, ta, root)
     assert alice2.pins == alice.pins
+    bob.send(bob.hello(ALICE))
+    alice2.recv()
+    assert alice2.last_pin == "known"
     bob.send(inform(BOB, ALICE))
     assert alice2.recv().sender == BOB
 

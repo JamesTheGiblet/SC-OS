@@ -22,6 +22,16 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
   `Peer.send` refuses to send as another agent. Both directions are stored with signatures.
   Keys persist in `keys/<name>.ed25519`. `keys/` and `store/*.json` are git-ignored.
 - `tests/test_peer.py`: nine asserting tests of pinning and rejections.
+- `Peer.last_pin` is `"new"` or `"known"` after a hello. The run scripts log
+  `first contact, key pinned` or `key matches pin` instead of `key pinned` every time.
+
+### Changed
+
+- Run-script timings are labelled for what they measure: Bob logs a full `cycle` (sign, send,
+  Alice's verify, dispatch and sign, receive, verify). Alice logs time since the sender created
+  the capsule. Neither is network latency.
+- `run_bob.py` reports `FAIL agent://alice closed the connection` when Alice drops him
+  (for example after rejecting his key), instead of a traceback.
 - `tests/test_transport.py`: five asserting tests over real localhost TCP.
 - `tests/test_store.py`: exact round-trip, duplicate appends, reopen, pruning, signatures.
 - **Signatures in the ledger.** `Store.append(capsule, envelope=wire)` saves `sig`, `alg` and

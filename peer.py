@@ -67,6 +67,9 @@ class Peer:
         self.pins: dict[str, str] = (
             json.loads(self.pins_path.read_text()) if self.pins_path.exists() else {}
         )
+        # result of the most recent hello: "new" (first contact, pinned now)
+        # or "known" (matched an existing pin)
+        self.last_pin: str | None = None
 
     # --- outbound ---
 
@@ -137,3 +140,6 @@ class Peer:
             self.pins[sender] = offered
             self.pins_path.parent.mkdir(parents=True, exist_ok=True)
             self.pins_path.write_text(json.dumps(self.pins, indent=2))
+            self.last_pin = "new"
+        else:
+            self.last_pin = "known"

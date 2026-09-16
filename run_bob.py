@@ -65,7 +65,8 @@ def main() -> int:
             log(f"REJECT expected hello from {ALICE}")
             return 1
         agreed = negotiate(local_hello, remote_hello)
-        log(f"hello from {ALICE}, key pinned; agreed capsule_version={agreed['capsule_version']}")
+        pin = "first contact, key pinned" if peer.last_pin == "new" else "key matches pin"
+        log(f"hello from {ALICE}, {pin}; agreed capsule_version={agreed['capsule_version']}")
 
         now = datetime.now(timezone.utc)
         msg = Capsule(
@@ -96,8 +97,8 @@ def main() -> int:
         log(f"sent signed {msg.intent.value.upper()} topic={msg.semantics.topic} id={msg.id[-12:]}")
 
         reply = peer.recv()
-        rtt = (datetime.now(timezone.utc) - now).total_seconds()
-        log(f"recv verified ({rtt * 1000:.1f} ms round trip):")
+        cycle = (datetime.now(timezone.utc) - now).total_seconds()
+        log(f"recv verified ({cycle * 1000:.1f} ms cycle: sign, send, Alice verify+dispatch+sign, recv, verify):")
         for line in render(reply).splitlines():
             log(f"  {line}")
         if msg.id not in reply.provenance.derived_from:
@@ -106,6 +107,9 @@ def main() -> int:
         log("reply references our capsule: OK")
     except (PeerRejected, CapsuleRejected) as e:
         log(f"REJECT {type(e).__name__}: {e}")
+        return 1
+    except ConnectionError as e:
+        log(f"FAIL {ALICE} closed the connection ({e}); check her log, she may have rejected us")
         return 1
     finally:
         transport.close()

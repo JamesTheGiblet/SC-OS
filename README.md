@@ -41,8 +41,16 @@ A session goes:
 
 Each side keeps its ledger in `store/<name>.log`, its pins in `store/<name>.pins.json`,
 and its private key in `keys/<name>.ed25519` (git-ignored). Ledgers and pins persist,
-so later runs append and must present the same keys. Delete `store/<name>.pins.json`
-to forget a peer.
+so later runs append and must present the same keys. The log says `first contact, key pinned`
+or `key matches pin`. Delete `store/<name>.pins.json` to forget a peer.
+
+Every connection starts with exactly one hello in each direction. That's deliberate: a peer
+may have upgraded its versions between connections, and the hello is where its key is checked
+against the pin. Several hellos in a ledger mean several sessions. Timings in the log cover
+signing, sending, verifying and dispatch, not just network time.
+
+Verified restarts: same keys are accepted, a Bob with a new key is rejected by Alice
+(`key for agent://bob changed since first contact`), and deleted pins lead to a fresh first contact.
 
 ### Tests
 
