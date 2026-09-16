@@ -25,13 +25,6 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
 - `Peer.last_pin` is `"new"` or `"known"` after a hello. The run scripts log
   `first contact, key pinned` or `key matches pin` instead of `key pinned` every time.
 
-### Changed
-
-- Run-script timings are labelled for what they measure: Bob logs a full `cycle` (sign, send,
-  Alice's verify, dispatch and sign, receive, verify). Alice logs time since the sender created
-  the capsule. Neither is network latency.
-- `run_bob.py` reports `FAIL agent://alice closed the connection` when Alice drops him
-  (for example after rejecting his key), instead of a traceback.
 - `tests/test_transport.py`: five asserting tests over real localhost TCP.
 - `tests/test_store.py`: exact round-trip, duplicate appends, reopen, pruning, signatures.
 - **Signatures in the ledger.** `Store.append(capsule, envelope=wire)` saves `sig`, `alg` and
@@ -44,6 +37,11 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
 
 ### Changed
 
+- Run-script timings are labelled for what they measure: Bob logs a full `cycle` (sign, send,
+  Alice's verify, dispatch and sign, receive, verify). Alice logs time since the sender created
+  the capsule. Neither is network latency.
+- `run_bob.py` reports `FAIL agent://alice closed the connection` when Alice drops him
+  (for example after rejecting his key), instead of a traceback.
 - **Sharing rule decided: opinions travel as hints; belief is earned locally.**
   `blend(a, b, alpha)` became `blend(own, peer, trust=0.1)`. Before, it took on the peer's
   whole weight and evidence count, so two tests of your own plus a 50-test peer came out
