@@ -4,87 +4,67 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
 
 ## [Unreleased]
 
+Since v0.1: several nodes over TCP, identity, replay protection, a SQLite ledger, and fixes
+for bugs that only showed up across a process boundary.
+
 ### Added
 
-- `README.md` and this changelog.
-- **Two-process session.** `run_alice.py` listens and `run_bob.py` connects over TCP.
-  They exchange hellos, then a signed capsule and a signed ACK that references it.
-- **`peer.py`: identity by trust on first use.** A hello carries the sender's Ed25519 public
-  key and is signed by it; the receiver pins agent id → key in `store/<name>.pins.json`.
-  `Peer.recv` rejects:
-  - a capsule from an agent with no pinned key
-  - a changed key for a pinned agent
-  - a bad signature
-  - an envelope signer that isn't the capsule's `from`
-  - a capsule addressed to someone else
-  - a capsule that fails validation
-
-  `Peer.send` refuses to send as another agent. Both directions are stored with signatures.
-  Keys persist in `keys/<name>.ed25519`. `keys/` and `store/*.json` are git-ignored.
-- `tests/test_peer.py`: nine asserting tests of pinning and rejections.
-- **Replay protection.** `Peer.recv` rejects a verified capsule whose digest is already in the
-  ledger, which also works after a restart. It rejects expired capsules, so a replay can't
-  outlive the record that catches it.
-- **Multi-peer server.** `hal.transport.SocketListener` accepts many connections, each wrapped
-  as its own `SocketTransport`. `run_alice.py` serves concurrent sessions, one thread each,
-  sharing one node and one scheduler. Replies are routed by `to` to that agent's open session.
-  `--sessions N` exits after N sessions.
-- **Clients as any agent.** `run_bob.py` takes `--name` (e.g. `carol`), `--hold` to overlap
-  sessions, and `--replay` to resend a signed capsule and expect rejection.
-- **Session binding.** A session must open with a hello, even from an already pinned agent,
-  and then carries only that agent's capsules. `Peer.send` refuses other receivers.
-  An agent can hold one open session on Alice at a time.
-- **Thread safety.** `Store` locks appends, reads and prunes; `records()` iterates a snapshot.
-  `SocketTransport.send` is locked so concurrent replies can't interleave on the wire.
-- Tests: replay (same session, replayed hello, after restart), expiry, session binding,
-  pin poisoning, 8 concurrent sessions on one node, concurrent store appends, and a
-  listener serving 6 peers at once with interleaving-proof sends.
-- `Peer.last_pin` is `"new"` or `"known"` after a hello. The run scripts log
-  `first contact, key pinned` or `key matches pin` instead of `key pinned` every time.
-
-- `tests/test_transport.py`: five asserting tests over real localhost TCP.
-- `tests/test_store.py`: exact round-trip, duplicate appends, reopen, pruning, signatures.
-- **Signatures in the ledger.** `Store.append(capsule, envelope=wire)` saves `sig`, `alg` and
-  `pubkey_id` with the record. `Store.get_record(digest)` returns the full record;
-  `Store.envelope_of(digest)` returns an envelope ready for `open_envelope` / `verify`.
-  An envelope wrapping a different capsule raises `ValueError`. A capsule stored unsigned
-  and appended again with a signature gets a new line that supersedes the old one;
-  a signed record is never replaced. `python -m store` shows `signed:<pubkey_id>` or `unsigned`.
-  The demo stores Alice's capsule signed and verifies it from the store.
+- **Multi-node sessions.** `run_alice.py` serves concurrent peers over TCP, one thread per
+  connection, sharing one node and one scheduler, and routes replies by `to` to that agent's
+  open session. `--sessions N` exits after N sessions. `run_bob.py` connects as any
+  `--name`, with `--hold` to overlap sessions and `--replay` to test replay rejection.
+- **`hal.transport.SocketListener`** accepts many connections, each its own `SocketTransport`.
+  `SocketTransport.close()` added; `send` is locked so concurrent replies can't interleave.
+- **`peer.py`: signed sessions.** `Node` holds one agent's key, pins, ledger and lock; `Peer` is
+  one session over one transport (`Node(...).session(transport)`).
+  - **Trust on first use.** A hello carries the sender's Ed25519 key and is signed by it. The first
+    hello that verifies and validates pins agent id → key in `store/<name>.pins.json`.
+    Keys persist in `keys/<name>.ed25519`.
+  - **Session binding.** A session must open with a hello, even from a pinned agent, then
+    carries only that agent's capsules. `Peer.send` refuses to send as another agent or to
+    another receiver.
+  - **Replay protection.** A verified capsule whose digest is already in the ledger is rejected,
+    across restarts too. Expired capsules are rejected.
+  - `Peer.recv` also rejects: a changed key for a pinned agent, a bad signature, a signer label
+    that isn't the capsule's `from`, a capsule addressed to someone else, and a capsule that
+    fails validation.
+  - `Peer.last_pin` is `"new"` or `"known"`; run logs say `first contact, key pinned` or
+    `key matches pin`.
+- **Signatures in the ledger.** `Store.append(capsule, envelope=wire)` keeps the signature;
+  `Store.get_record(digest)` returns the full record and `Store.envelope_of(digest)` an envelope
+  ready for `verify`. An envelope wrapping a different capsule raises `ValueError`. Adding a
+  signature to a capsule stored unsigned updates it; a signed record is never replaced.
+  `python -m store` shows `signed:<pubkey_id>` or `unsigned`.
+- **`python -m store import <jsonl> <db>`** migrates pre-SQLite ledgers, keeping stored times and
+  signatures, so migrated history still blocks replays.
+- **Tests with asserts.** `tests/test_store.py` (14), `tests/test_transport.py` (9, real localhost
+  TCP), `tests/test_peer.py` (17). `tests/test_weight.py` asserts the sharing rule.
+- `README.md` (with a "why capsules" section), this changelog, and rewritten `NOTES.md`
+  recording design decisions and open questions.
 
 ### Changed
 
-- **Capsule storage moved to SQLite.** `store.py` keeps the same `Store` API on one database
-  file per node (`store/<name>.db`, WAL mode). Each capsule is a row: JSON body, unique digest,
-  stored time, signature columns, and indexed `capsule_id`, `sender`, `receiver`, `topic`,
-  `intent` and `expires_at`.
-  - Signing a capsule already stored unsigned updates its row, keeping its original
-    `stored_at` and position, instead of appending a superseding line.
-  - `prune_expired` is a `DELETE`, and incremental vacuum returns the space to the disk.
+- **Capsule storage moved to SQLite.** Same `Store` API, one database file per node
+  (`store/<name>.db`, WAL mode). Each capsule is a row: JSON body, unique digest, stored time,
+  signature columns, and indexed `capsule_id`, `sender`, `receiver`, `topic`, `intent`,
+  `expires_at`.
+  - `prune_expired` deletes rows and runs incremental vacuum, so the file shrinks.
   - Several processes can open the same store.
-  - `python -m store import <jsonl> <db>` migrates old ledgers, keeping stored times and
-    signatures. Migrated history still blocks replays.
-  - Measured at 20,000 signed capsules, JSONL → SQLite: lookup 48 ms → 0.06 ms,
+  - Measured at 20,000 signed capsules, JSON Lines → SQLite: lookup 48 ms → 0.06 ms,
     open 351 ms → 7 ms, append 1,646/s → 1,462/s, prune of half 941 ms → 976 ms,
     disk 19.7 MB → 25.3 MB (14.2 MB after pruning half).
-  - Callers now use `.db` paths. `store/*.db*` is git-ignored.
-- `peer.py` split into `Node` (one agent's key, pins, ledger and lock, shared by all its
-  sessions) and `Peer` (one session). Create sessions with `Node(...).session(transport)`.
-- Run-script timings are labelled for what they measure: Bob logs a full `cycle` (sign, send,
-  Alice's verify, dispatch and sign, receive, verify). Alice logs time since the sender created
-  the capsule. Neither is network latency.
-- `run_bob.py` reports `FAIL agent://alice closed the connection` when Alice drops him
-  (for example after rejecting his key), instead of a traceback.
+  - Callers use `.db` paths; `store/*.db*`, `store/*.json` and `keys/` are git-ignored.
 - **Sharing rule decided: opinions travel as hints; belief is earned locally.**
   `blend(a, b, alpha)` became `blend(own, peer, trust=0.1)`. Before, it took on the peer's
   whole weight and evidence count, so two tests of your own plus a 50-test peer came out
-  `trusted` with n=52 and slow decay. It also never used `alpha`. Now the peer's weight
-  counts at `trust` (0..1), and the result keeps your own `evidence_count` and `last_tested`.
-  The same example gives value +1.40, `leaning_trusted`, n=2. `tests/test_weight.py`
-  asserts the rule. The argument order changed; the weight test was the only caller.
-- `Store.records()` and `Store.all()` yield only current records: superseded and
-  unreadable lines are skipped, matching the index. `--full` dumps the whole record.
-- `SocketTransport.close()`.
+  `trusted` with n=52 and slow decay, and `alpha` was never used. Now the peer's weight counts
+  at `trust` (0..1), and the result keeps your own `evidence_count` and `last_tested`.
+  The same example gives value +1.40, `leaning_trusted`, n=2.
+- Run-script timings say what they measure: Bob logs a full `cycle` (sign, send, Alice's verify,
+  dispatch and sign, receive, verify); Alice logs time since the sender created the capsule.
+  Neither is network latency.
+- `run_bob.py` reports `FAIL agent://alice closed the connection` when dropped, instead of a
+  traceback.
 
 ### Fixed
 
@@ -96,23 +76,48 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
 - **Every reply failed validation.** Scheduler replies set `provenance.method="reply"`, which
   `sc.schema.json` didn't allow. The single-process demo never validated a reply; the first
   two-process run rejected Alice's ACK. `reply` is now an allowed method.
-- **Handshake vocab version.** `make_hello` sent Python's set repr (`vocab_version={'1.0'}`).
-  It now sends `vocab_versions=1.0`, matching `capsule_versions`. `negotiate` compares
-  vocab versions, raises `no shared vocab version` on mismatch, and returns `vocab_version`.
-- **Version choice compares numbers, not strings.** `10.0` now beats `9.0`.
-- **Edge downgrade emitted invalid messages.** `sc_edge.json` now allows `tr: "none"`
-  (as `vocab.json` does). `from_edge_wire` and `to_edge_wire` validate against the
-  schema and raise `CapsuleRejected("edge_schema", …)` on a bad message.
 - **Socket framing lost messages.** `SocketTransport.recv` kept no buffer between calls:
   two messages in one TCP read raised `JSONDecodeError: Extra data`, and bytes after the
   first newline were dropped. Leftover bytes are now kept for the next `recv`.
   Frames are capped at 1 MiB. A listener whose peer disconnects accepts the next connection.
+- **Handshake vocab version.** `make_hello` sent Python's set repr (`vocab_version={'1.0'}`).
+  It now sends `vocab_versions=1.0`. `negotiate` compares vocab versions, raises
+  `no shared vocab version` on mismatch, and returns `vocab_version`.
+- **Version choice compared strings.** `10.0` now beats `9.0`.
+- **Edge downgrade emitted invalid messages.** `sc_edge.json` now allows `tr: "none"`
+  (as `vocab.json` does). `from_edge_wire` and `to_edge_wire` validate against the
+  schema and raise `CapsuleRejected("edge_schema", …)` on a bad message.
+- **Pruning rewrote history.** The JSON Lines store reset `stored_at` on every record it kept
+  after a prune. Fixed there, and SQLite pruning deletes rows without touching the rest.
+- **Pruning didn't free disk space** in the first SQLite version: `PRAGMA incremental_vacuum`
+  frees one page per result row and only one row was read. All rows are now read; a test checks
+  the file shrinks.
 - **Leighton Weight draft contradicted the code.** `leighton_weight_readme.py` said value
-  does not decay. It now gives the rule `weight.py` implements: value's distance from +1
-  shrinks by the same `exp(-k·t)` as weight. It also gives the step sizes, says only observed
-  outcomes reinforce, and fixes the command for running the test.
-- **Pruning rewrote history.** `Store.prune_expired` reset `stored_at` on every record it kept.
-  It now rewrites surviving records unchanged.
+  does not decay. It now gives the rule `weight.py` implements, the step sizes, and the
+  sharing rule, and says only observed outcomes reinforce.
+
+### The good
+
+- Three real processes run overlapping sessions; each peer gets its own verified ACK, and a
+  byte-identical replay is rejected, including one from before the storage migration.
+- The trust boundary is tested from the attacker's side: forged hellos, tampering, key changes,
+  label mismatches, misaddressing, cross-session capsules, replays and expiry.
+- The ledger proves who said what on its own, and lookups stay fast as it grows.
+
+### The bad
+
+- Only ever run on one machine, in a star; no relaying, no queue for offline agents.
+- `record_outcome` still has no real caller, so opinions don't move from real traffic.
+- Trust on first use trusts whoever arrives first; no registry, no key rotation.
+- SQLite files are ~1.3× the old JSON Lines size, and nothing prunes on a schedule.
+- Validator, interpreter, merge and scheduler still have no asserting tests.
+
+### The ugly
+
+- `SocketTransport.recv` used directly still trusts the sender's self-declared label;
+  only `Peer.recv` checks it.
+- `merge` builds an unaddressable sender (`agent://alice+agent://bob`).
+- Agent replies and edge upgrades don't set `derived_from`; `Provenance.signature` is always null.
 
 ## [v0.1] — 2026-09-16
 
