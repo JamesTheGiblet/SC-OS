@@ -170,6 +170,27 @@ def test_indexed_columns_are_queryable():
         == ("supply_chain_risk",)
 
 
+def test_find_filters_on_indexed_columns():
+    s = new_store()
+
+    def cap(n, sender, topic, ttl=60):
+        return {"id": f"urn:uuid:{n}", "created": T0.isoformat(), "from": sender,
+                "to": "agent://alice", "intent": "inform", "semantics": {"topic": topic},
+                "action_hints": {"ttl_seconds": ttl}}
+
+    d1 = s.append(cap(1, "agent://bob", "a"))
+    d2 = s.append(cap(2, "agent://carol", "a", ttl=86400))
+    d3 = s.append(cap(3, "agent://bob", "b"))
+    ids = lambda recs: [r["digest"] for r in recs]
+    assert ids(s.find(topic="a")) == [d1, d2]
+    assert ids(s.find(sender="agent://bob")) == [d1, d3]
+    assert ids(s.find(topic="a", sender="agent://bob")) == [d1]
+    assert ids(s.find(capsule_id="urn:uuid:3")) == [d3]
+    assert ids(s.find(topic="a", unexpired_at=T0 + timedelta(hours=1))) == [d2]
+    assert ids(s.find()) == [d1, d2, d3]
+    assert s.find(topic="nope") == []
+
+
 def test_import_jsonl_keeps_history_and_signatures():
     import json
     c1, c2 = capsule(1, 60), capsule(2, 60)

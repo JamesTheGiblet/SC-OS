@@ -35,9 +35,21 @@ for bugs that only showed up across a process boundary.
   ready for `verify`. An envelope wrapping a different capsule raises `ValueError`. Adding a
   signature to a capsule stored unsigned updates it; a signed record is never replaced.
   `python -m store` shows `signed:<pubkey_id>` or `unsigned`.
+- **SC-OS describes itself in capsules.** `self_describe.py` reads every Python file (with `ast`),
+  the tests, `vocab.json`, the schema, `NOTES.md` and `README.md`, runs the test files, and stores
+  signed capsules from `agent://sc-os` in `store/self.db`. Topics: `self.identity`, `self.module`
+  (per file, with `depends_on` relations), `self.tests` (with `supports` relations),
+  `self.test_results`, `self.vocabulary`, `self.decisions` (directive claims),
+  `self.open_questions` (known unknowns), `self.limits`, `self.next`. Every capsule passes
+  `ingest()`. Ids come from content, so an unchanged rerun stores nothing, and a changed file's new
+  capsule has `derived_from` pointing at the previous version. `--show [TOPIC]` prints the current
+  description, `--dry-run` previews, `--no-tests` skips running tests without erasing old results.
+  First run: 43 capsules, all tests PASSED. `tests/test_self_describe.py` (6).
+- **`Store.find(topic=, sender=, receiver=, capsule_id=, unexpired_at=)`** queries the indexed
+  columns.
 - **`python -m store import <jsonl> <db>`** migrates pre-SQLite ledgers, keeping stored times and
   signatures, so migrated history still blocks replays.
-- **Tests with asserts.** `tests/test_store.py` (14), `tests/test_transport.py` (9, real localhost
+- **Tests with asserts.** `tests/test_store.py` (15), `tests/test_transport.py` (9, real localhost
   TCP), `tests/test_peer.py` (17). `tests/test_weight.py` asserts the sharing rule.
 - `README.md` (with a "why capsules" section), this changelog, and rewritten `NOTES.md`
   recording design decisions and open questions.

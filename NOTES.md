@@ -3,7 +3,7 @@
 Working notes: decisions made and why, open questions, what's next.
 [README.md](README.md) describes the system; [CHANGELOG.md](CHANGELOG.md) records what changed.
 
-Last updated 2026-09-16, after the SQLite ledger (commit `ac98763`).
+Last updated 2026-09-16, after self-description capsules.
 
 ## Decisions
 
@@ -37,6 +37,11 @@ Each decision was made against the code as it stood; revisit only with a reason.
   capsules), in-place pruning and safe multi-process access. It does not make files smaller:
   about 1.3× JSON Lines on disk because of indexes. Size is managed by pruning. Capsule bodies stay
   plain JSON (not compressed) so `json_extract` queries work.
+- **SC-OS describes itself in its own format.** `self_describe.py` turns the code, docs and
+  test runs into `self.*` capsules. Generated from the source, not written by hand, so the
+  description can't drift from the code for longer than one run. Content-derived ids make reruns
+  idempotent, and `derived_from` links a file's versions. Seven-day TTL: unrefreshed
+  self-knowledge expires rather than going stale silently.
 - **Merge keeps the trigger** of the first parent, or the second's if the first is `none`.
   No strength ordering between triggers yet.
 - **Version choice is numeric.** Highest shared version wins by number, not string sort.
@@ -61,6 +66,9 @@ Each decision was made against the code as it stood; revisit only with a reason.
 - **Pruning schedule.** Who calls `prune_expired`, and how often?
 - **Undelivered replies.** A reply to an agent with no open session is stored but dropped.
   Queue it until the agent reconnects?
+- **Sharing the self-description.** `self.*` capsules live only in `store/self.db`. Should a node
+  send them to peers after the hello, so peers can see each other's version, modules and test
+  results? Would test results count as outcomes for `record_outcome`?
 - **Trust per peer.** `blend` takes one `trust` value. Now that keys are pinned, trust could be
   per agent. Where would it be stored?
 

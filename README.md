@@ -36,6 +36,35 @@ python -m store store/demo.db      # print the ledger the demo wrote (add --full
 `demo.py` deletes `store/demo.db` at startup so each run begins empty.
 Digests differ between runs because every capsule gets a fresh UUID and timestamp.
 
+### SC-OS describes itself
+
+```sh
+python self_describe.py                         # read the code and docs, run the tests, store capsules
+python self_describe.py --show                  # print the current self-description
+python self_describe.py --show self.module      # one topic
+python self_describe.py --no-tests --dry-run    # preview without running tests or storing
+```
+
+The system records what it's made of as capsules from `agent://sc-os`, signed and stored in
+`store/self.db`, each validated like any received capsule:
+
+| Topic | One capsule per | Claims |
+| --- | --- | --- |
+| `self.identity` | the system | what SC-OS is and why, size, dependencies, git commit |
+| `self.module` | Python file | purpose, classes with method signatures, functions, constants; `depends_on` relations to local modules and packages |
+| `self.tests` | test file | every test it defines; `supports` relations to the modules it tests |
+| `self.test_results` | test file | PASSED or FAILED from actually running it |
+| `self.vocabulary` | the system | intents, triggers, claim types, predicates, provenance methods |
+| `self.decisions` | the system | design decisions from `NOTES.md`, as directive claims |
+| `self.open_questions` | the system | open questions from `NOTES.md`, as known unknowns |
+| `self.limits` | README section | the bad and the ugly |
+| `self.next` | the system | planned next steps |
+
+Capsule ids come from content, so a rerun with nothing changed stores nothing. Change a file and
+only its capsule gets a new version, with `derived_from` pointing at the one it replaces. Evidence
+cites file, line and file hash. Capsules live 7 days (the schema maximum): self-knowledge that
+isn't refreshed expires. `--no-tests` leaves earlier test results alone.
+
 ### Multiple nodes: Alice, Bob, Carol
 
 Alice first, then any number of clients, each in its own terminal:
@@ -72,6 +101,7 @@ sending, verifying and dispatch, not just network time.
 | `store/<name>.db` | SQLite ledger: every capsule sent or received, with signatures | no |
 | `store/<name>.pins.json` | Agent id → pinned public key. Delete to forget a peer. | no |
 | `keys/<name>.ed25519` | The node's private key | no |
+| `store/self.db`, `keys/sc-os.ed25519` | SC-OS's self-description and the key that signs it | no |
 
 Ledgers and pins persist, so later runs add to them and peers must present the same keys.
 The run log says `first contact, key pinned` or `key matches pin`. Ledgers from before the
@@ -98,9 +128,10 @@ sqlite3 store/alice.db "SELECT json_extract(capsule, '$.semantics.claims[0].stat
 ### Tests
 
 ```sh
-python tests/test_store.py        # 14: round-trip, signatures, pruning and disk space, import, concurrent writers
-python tests/test_transport.py    # 9:  framing, many peers at once, concurrent sends (real localhost TCP)
-python tests/test_peer.py         # 17: pinning, rejections, replay, session binding, concurrent sessions
+python tests/test_store.py          # 15: round-trip, signatures, find, pruning and disk space, import, concurrent writers
+python tests/test_transport.py      # 9:  framing, many peers at once, concurrent sends (real localhost TCP)
+python tests/test_peer.py           # 17: pinning, rejections, replay, session binding, concurrent sessions
+python tests/test_self_describe.py  # 6:  valid capsules, every file described, versions chain, rerun stores nothing
 ```
 
 Weight model walkthrough (prints trajectories; the sharing-rule section asserts):
@@ -173,7 +204,8 @@ Capsule ─to_wire─► dict ─sign─► envelope ──TCP──► Peer.rec
 | `validator.py` | JSON Schema + version, clock skew (30s future, 7d past), vocab, coherence, staleness checks |
 | `interpreter.py` | `to_wire` / `from_wire`, `ingest`, `merge`, `actionable`, `is_expired`, `render` |
 | `envelope.py` | Canonical JSON, SHA-256 `digest`, Ed25519 `sign` / `verify` |
-| `store.py` | SQLite ledger keyed by digest, indexed sender/receiver/topic/expiry; `python -m store <db>` dumps it, `python -m store import <jsonl> <db>` migrates old ledgers |
+| `store.py` | SQLite ledger keyed by digest, indexed sender/receiver/topic/expiry, `find()` on those columns; `python -m store <db>` dumps it, `python -m store import <jsonl> <db>` migrates old ledgers |
+| `self_describe.py` | Reads the code, docs and test results into signed `self.*` capsules in `store/self.db` |
 | `peer.py` | `Node` (key, pins, ledger, lock) and `Peer` (one session): trust-on-first-use pins, verify, validate, replay check, store signed |
 | `scheduler.py` | Kernel: stores in and out, routes by trigger, `record_outcome` feeds opinions |
 | `weight.py` | Leighton Weight: exponential decay, `Opinion` (value + weight), `blend` |

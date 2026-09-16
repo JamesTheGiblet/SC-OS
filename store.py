@@ -167,6 +167,26 @@ class Store:
                 "SELECT 1 FROM capsules WHERE digest = ?", (digest_hex,)
             ).fetchone() is not None
 
+    def find(self, *, topic: str | None = None, sender: str | None = None,
+             receiver: str | None = None, capsule_id: str | None = None,
+             unexpired_at: datetime | None = None) -> list[dict]:
+        """Records matching every given filter, in storage order. Uses the indexed columns."""
+        where, params = [], []
+        for column, value in (("topic", topic), ("sender", sender),
+                              ("receiver", receiver), ("capsule_id", capsule_id)):
+            if value is not None:
+                where.append(f"{column} = ?")
+                params.append(value)
+        if unexpired_at is not None:
+            where.append("(expires_at IS NULL OR expires_at >= ?)")
+            params.append(unexpired_at.timestamp())
+        sql = "SELECT * FROM capsules"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        with self._lock:
+            rows = self._db.execute(sql + " ORDER BY seq", params).fetchall()
+        return [self._record(row) for row in rows]
+
     def records(self) -> Iterator[dict]:
         """All records in storage order (a snapshot; iterating holds no lock)."""
         with self._lock:
