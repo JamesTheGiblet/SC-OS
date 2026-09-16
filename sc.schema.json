@@ -78,7 +78,7 @@
           "type": "array",
           "items": { "type": "string", "pattern": "^urn:uuid:" }
         },
-        "method": { "type": "string", "enum": ["synthesis", "merge", "relay", "observation"] },
+        "method": { "type": "string", "enum": ["synthesis", "merge", "relay", "observation", "reply"] },
         "signature": { "type": ["string", "null"] }
       }
     },
