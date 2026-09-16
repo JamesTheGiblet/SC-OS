@@ -22,6 +22,12 @@ python -m store store/demo.log     # print the ledger the demo wrote (add --full
 `demo.py` deletes `store/demo.log` at startup so each run begins empty.
 Digests differ between runs because every capsule gets a fresh UUID and timestamp.
 
+Socket framing tests (real localhost TCP, asserts):
+
+```sh
+python tests/test_transport.py
+```
+
 Weight model walkthrough (prints trajectories, no asserts):
 
 ```sh
@@ -125,8 +131,9 @@ Over idle time weight decays and value slides back toward +1 at the same rate.
 
 ### The bad — known limits, by design for now
 
-- **Single process only.** `SocketTransport` exists but nothing uses it.
-  The kernel doesn't import `hal/` at all.
+- **Single process only.** `SocketTransport` is tested over localhost but nothing uses it.
+  The kernel doesn't import `hal/` at all. The socket link is point-to-point: one peer
+  at a time, `peer` in `send()` isn't used for routing, and a client doesn't reconnect.
 - **Identity isn't bound to keys.** A signature proves *some key* signed a capsule,
   not that the key belongs to `agent://alice`. No registry, no trust-on-first-use, no root of trust.
   Genesis doesn't create or announce a key.
@@ -136,8 +143,8 @@ Over idle time weight decays and value slides back toward +1 at the same rate.
   Capsules have no field for task success or failure.
 - **Stubs.** `_escalate`, `_handle_task_result` and `_handle_threshold` all just ACK.
   `boot/discovery.py` (reads `peers.json`), `RelayAgent` and `hal/clock.py` are unused.
-- **No real tests.** `tests/test_weight.py` prints trajectories and asserts nothing.
-  Correctness is currently "the demo trace looks right".
+- **Few real tests.** Only `tests/test_transport.py` asserts. `tests/test_weight.py`
+  prints trajectories and asserts nothing. For the rest, correctness means "the demo trace looks right".
 - **Scale.** `store.get` scans the file line by line. There's no file locking, so
   two processes must not share one store file.
 - **Tunables with no definition yet.** `stakes_factor` means nothing concrete. The stance bands are
@@ -145,9 +152,6 @@ Over idle time weight decays and value slides back toward +1 at the same rate.
 
 ### The ugly — will bite you without warning
 
-- **Socket framing drops data.** `SocketTransport.recv` has no buffer between calls.
-  Two messages in one TCP read fail to parse; bytes after the first newline are lost.
-  The listener accepts one connection, ever, and ignores the `peer` argument.
 - **`recv` trusts the sender's own label.** It returns the envelope's self-declared `pubkey_id`,
   and nothing checks that against the capsule's `from`.
 - **Pruning rewrites history.** `Store.prune_expired` resets every surviving record's
@@ -162,7 +166,7 @@ Over idle time weight decays and value slides back toward +1 at the same rate.
 
 ## Roadmap
 
-1. Fix `SocketTransport` framing (its own commit, nothing else changed).
+1. ~~Fix `SocketTransport` framing.~~ Done.
 2. Two-process test: `run_alice.py` listens, `run_bob.py` connects.
 3. Identity binding: key ↔ agent id.
 4. Outcome field on `task_result` capsules, wired into `record_outcome`.

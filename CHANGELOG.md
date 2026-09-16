@@ -7,6 +7,8 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
 ### Added
 
 - `README.md` and this changelog.
+- `tests/test_transport.py`: five asserting tests over real localhost TCP.
+- `SocketTransport.close()`.
 
 ### Fixed
 
@@ -17,6 +19,10 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
 - **Edge downgrade emitted invalid messages.** `sc_edge.json` now allows `tr: "none"`
   (as `vocab.json` does). `from_edge_wire` and `to_edge_wire` validate against the
   schema and raise `CapsuleRejected("edge_schema", …)` on a bad message.
+- **Socket framing lost messages.** `SocketTransport.recv` kept no buffer between calls:
+  two messages in one TCP read raised `JSONDecodeError: Extra data`, and bytes after the
+  first newline were dropped. Leftover bytes are now kept for the next `recv`.
+  Frames are capped at 1 MiB. A listener whose peer disconnects accepts the next connection.
 
 ## [v0.1] — 2026-09-16
 

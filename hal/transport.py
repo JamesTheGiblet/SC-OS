@@ -4,6 +4,7 @@ Swap implementations without touching the kernel.
 """
 
 import json
+import socket
 from pathlib import Path
 from typing import Protocol
 
@@ -39,38 +40,81 @@ class FileTransport:
         raise BlockingIOError("no message")
 
 
+MAX_FRAME_BYTES = 1 << 20   # 1 MiB per message
+
+
 class SocketTransport:
-    """Network. TCP. Phone dials out; laptop listens."""
+    """
+    Network. TCP. Phone dials out; laptop listens.
+
+    Framing: one JSON object per line. json.dumps escapes newlines inside
+    strings, so a raw b"\\n" only ever ends a frame. Bytes after a frame are
+    kept for the next recv.
+
+    Point-to-point: one peer at a time; `peer` in send() is not used for
+    routing. A listener that loses its peer accepts the next connection.
+    """
 
     def __init__(self, mode: str, host: str, port: int):
-        import socket
         self.mode = mode
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.conn: socket.socket | None = None
+        self._buf = b""
         if mode == "listen":
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.sock.bind((host, port))
             self.sock.listen(8)
-            self.conn = None
         elif mode == "connect":
             self.sock.connect((host, port))
             self.conn = self.sock
         else:
             raise ValueError("mode must be listen or connect")
 
-    def send(self, peer: str, envelope: dict) -> None:
-        payload = (json.dumps(envelope) + "\n").encode()
+    def _ensure_conn(self) -> socket.socket:
         if self.conn is None:
             self.conn, _ = self.sock.accept()
-        self.conn.sendall(payload)
+            self._buf = b""
+        return self.conn
+
+    def _drop_conn(self) -> None:
+        if self.mode == "listen" and self.conn is not None:
+            self.conn.close()
+            self.conn = None
+        self._buf = b""
+
+    def send(self, peer: str, envelope: dict) -> None:
+        payload = (json.dumps(envelope, separators=(",", ":")) + "\n").encode()
+        if len(payload) > MAX_FRAME_BYTES:
+            raise ValueError(f"envelope is {len(payload)} bytes, max {MAX_FRAME_BYTES}")
+        conn = self._ensure_conn()
+        try:
+            conn.sendall(payload)
+        except OSError:
+            self._drop_conn()
+            raise
 
     def recv(self) -> tuple[str, dict]:
-        if self.conn is None:
-            self.conn, _ = self.sock.accept()
-        buf = b""
-        while not buf.endswith(b"\n"):
-            chunk = self.conn.recv(4096)
+        conn = self._ensure_conn()
+        while b"\n" not in self._buf:
+            if len(self._buf) > MAX_FRAME_BYTES:
+                self._drop_conn()
+                raise ConnectionError(f"frame exceeds {MAX_FRAME_BYTES} bytes")
+            try:
+                chunk = conn.recv(65536)
+            except OSError:
+                self._drop_conn()
+                raise
             if not chunk:
+                self._drop_conn()
                 raise ConnectionError("peer closed")
-            buf += chunk
-        env = json.loads(buf.decode())
+            self._buf += chunk
+        line, self._buf = self._buf.split(b"\n", 1)
+        env = json.loads(line.decode())
+        # NOTE: pubkey_id is self-declared by the sender, not verified here.
         return env.get("pubkey_id", "unknown"), env
+
+    def close(self) -> None:
+        if self.conn is not None and self.conn is not self.sock:
+            self.conn.close()
+        self.conn = None
+        self.sock.close()
