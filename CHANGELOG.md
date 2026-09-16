@@ -36,6 +36,10 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
   two messages in one TCP read raised `JSONDecodeError: Extra data`, and bytes after the
   first newline were dropped. Leftover bytes are now kept for the next `recv`.
   Frames are capped at 1 MiB. A listener whose peer disconnects accepts the next connection.
+- **Leighton Weight draft contradicted the code.** `leighton_weight_readme.py` said value
+  does not decay. It now gives the rule `weight.py` implements: value's distance from +1
+  shrinks by the same `exp(-k·t)` as weight. It also gives the step sizes, says only observed
+  outcomes reinforce, and fixes the command for running the test.
 - **Pruning rewrote history.** `Store.prune_expired` reset `stored_at` on every record it kept.
   It now rewrites surviving records unchanged.
 

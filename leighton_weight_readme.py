@@ -16,7 +16,7 @@ Influence fades exponentially unless reinforced.
 | BlockForge | block influence  | re-weighting     | chain age    |
 | ChatterPet | word relevance   | repetition       | disuse       |
 | HABITAT    | biome resource   | regrowth         | consumption  |
-| SC-OS      | skill confidence | successful use   | untested time|
+| SC-OS      | skill confidence | observed outcome | untested time|
 
 ## The SC-OS Application
 
@@ -26,8 +26,20 @@ A capsule is a skill. Each agent holds a private opinion:
                           0 = unclear, -2 = known-bad
     weight in [0, inf)   conviction
 
-The value does not decay. The weight does.
-As weight decays, value drifts toward +1 (unknown).
+Weight decays toward 0. Value's distance from unknown decays at the same rate:
+
+    ratio  = exp(-k * t),   k = k0 / (1 + evidence_count) / stakes_factor
+    weight = weight * ratio
+    value  = 1 + (value - 1) * ratio
+
+So value is not fixed: it slides back toward +1 exactly as fast as conviction
+fades. When weight falls below 1e-6, value snaps to +1 and weight to 0.
+
+Only observed outcomes reinforce (Scheduler.record_outcome). Receiving a
+capsule is not evidence.
+
+    success: value += 0.1, weight += 1
+    failure: value -= 0.2, weight += 3
 
 Unknown is the attractor. Everything else is temporary.
 
@@ -38,7 +50,9 @@ Capability transfers. Belief is earned locally.
 
 ## Running the test
 
-    python test_weight.py
+From the project root, with the root on the import path:
+
+    PYTHONPATH=. python tests/test_weight.py
 
 ## Open questions
 

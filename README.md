@@ -161,9 +161,6 @@ Over idle time weight decays and value slides back toward +1 at the same rate.
   `derived_from`. `Provenance.signature` is always `null` and unrelated to the envelope signature.
 - **Merged sender is a string join.** `merge` produces `agent://alice+agent://bob`,
   which isn't an addressable agent.
-- **Theory and code disagree in one place.** `leighton_weight_readme.py` says value does not
-  decay; `Opinion.tick` moves value toward +1 at the same rate weight decays. The code is the
-  model; the prose needs fixing.
 
 ## Roadmap
 
