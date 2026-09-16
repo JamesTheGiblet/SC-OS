@@ -109,6 +109,10 @@ private `Opinion` per topic: `value` on [−2, +2] where **+1 means unknown**, a
 Over idle time weight decays and value slides back toward +1 at the same rate.
 **Receiving a capsule is not evidence.** Only `Scheduler.record_outcome()` moves an opinion.
 
+**Opinions travel as hints; belief is earned locally.** `blend(own, peer, trust=0.1)` gives
+a decision-time view: the peer's weight counts at `trust` of its face value, and the view keeps
+your own evidence count and decay clock. Never store it as your opinion.
+
 ## The good, the bad, and the ugly
 
 ### The good — works, and the demo proves it
@@ -146,8 +150,10 @@ Over idle time weight decays and value slides back toward +1 at the same rate.
   Capsules have no field for task success or failure.
 - **Stubs.** `_escalate`, `_handle_task_result` and `_handle_threshold` all just ACK.
   `boot/discovery.py` (reads `peers.json`), `RelayAgent` and `hal/clock.py` are unused.
-- **Few real tests.** Only the store and transport tests assert. `tests/test_weight.py`
-  prints trajectories and asserts nothing. For the rest, correctness means "the demo trace looks right".
+- **Few real tests.** The store and transport tests assert. `tests/test_weight.py`
+  mostly prints trajectories; only its sharing-rule section asserts.
+- **Hints aren't wired in.** Nothing fills a capsule's `epistemic` block from the sender's
+  opinion, and the scheduler never calls `blend`. For the rest, correctness means "the demo trace looks right".
 - **Scale.** `store.get` scans the file line by line. There's no file locking, so
   two processes must not share one store file.
 - **Tunables with no definition yet.** `stakes_factor` means nothing concrete. The stance bands are

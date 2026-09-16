@@ -19,6 +19,13 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
 
 ### Changed
 
+- **Sharing rule decided: opinions travel as hints; belief is earned locally.**
+  `blend(a, b, alpha)` became `blend(own, peer, trust=0.1)`. Before, it took on the peer's
+  whole weight and evidence count, so two tests of your own plus a 50-test peer came out
+  `trusted` with n=52 and slow decay. It also never used `alpha`. Now the peer's weight
+  counts at `trust` (0..1), and the result keeps your own `evidence_count` and `last_tested`.
+  The same example gives value +1.40, `leaning_trusted`, n=2. `tests/test_weight.py`
+  asserts the rule. The argument order changed; the weight test was the only caller.
 - `Store.records()` and `Store.all()` yield only current records: superseded and
   unreadable lines are skipped, matching the index. `--full` dumps the whole record.
 - `SocketTransport.close()`.

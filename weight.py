@@ -162,23 +162,27 @@ class Opinion:
 
 # --- convenience ------------------------------------------------------------
 
-def blend(a: Opinion, b: Opinion, alpha: float = 0.5) -> Opinion:
+def blend(own: Opinion, peer: Opinion, trust: float = 0.1) -> Opinion:
     """
-    Combine two opinions (e.g., peer hint + own experience).
-    Weighted by their respective weights.
+    Sharing rule: opinions travel as hints; belief is earned locally.
+
+    Returns a decision-time view of `own` nudged by a peer's hint. The peer's
+    weight counts at `trust` (0..1) of its face value, so a peer can never
+    outweigh the same amount of your own evidence. The view keeps your own
+    evidence_count and last_tested: a hint is not evidence and does not slow
+    your decay.
+
+    Never store the result as your opinion or observe() on it. Belief changes
+    only through your own observed outcomes.
     """
-    if alpha < 0 or alpha > 1:
-        raise ValueError("alpha must be in [0,1]")
-    total = a.weight + b.weight
-    if total == 0:
-        return Opinion()
-    w = a.weight / total if total > 0 else 0.5
+    if not 0 <= trust <= 1:
+        raise ValueError("trust must be in [0,1]")
+    peer_w = trust * peer.weight
+    total = own.weight + peer_w
+    value = own.value if total == 0 else (own.value * own.weight + peer.value * peer_w) / total
     return Opinion(
-        value=a.value * w + b.value * (1 - w),
+        value=value,
         weight=total,
-        evidence_count=a.evidence_count + b.evidence_count,
-        last_tested=max(
-            (d for d in (a.last_tested, b.last_tested) if d is not None),
-            default=None,
-        ),
+        evidence_count=own.evidence_count,
+        last_tested=own.last_tested,
     )

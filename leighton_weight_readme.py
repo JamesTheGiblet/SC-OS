@@ -45,8 +45,20 @@ Unknown is the attractor. Everything else is temporary.
 
 ## The Sharing Rule
 
-Skills are shared. Opinions are not.
+Skills are shared. Opinions travel only as hints.
 Capability transfers. Belief is earned locally.
+
+A capsule may carry its sender's opinion (the `epistemic` block). The
+receiver can fold that hint into a decision with blend(own, peer, trust):
+
+    peer_w = trust * peer.weight          trust in [0, 1], default 0.1
+    value  = (own.value * own.weight + peer.value * peer_w) / (own.weight + peer_w)
+    weight = own.weight + peer_w
+    evidence_count, last_tested = own's
+
+The result is a view, never stored. A peer can't outweigh the same amount of
+your own evidence, can't add to your evidence count, and can't slow your
+decay. Only your own observed outcomes change what you believe.
 
 ## Running the test
 

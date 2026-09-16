@@ -99,11 +99,28 @@ own.observe(success=False, now=NOW)
 show("peer hint (50 tests)", peer)
 show("own experience (1+1)", own)
 
-combined = blend(peer, own)
+own_before = (own.value, own.weight, own.evidence_count, own.last_tested)
+combined = blend(own, peer)              # trust=0.1: peer counts as weight 5
 print()
-show("blended", combined)
-print("\n  Own experience dominates because peer weight >> own weight,")
-print("  but own value pulls the blend toward its own observation.")
+show("view (trust=0.1)", combined)
+print("\n  The hint moves the value, but a 50-test peer counts like 5 of your own")
+print("  weight. Evidence count and decay clock stay yours: a hint is not evidence.")
+
+assert combined.evidence_count == own.evidence_count
+assert combined.last_tested == own.last_tested
+assert own.value < combined.value < peer.value
+assert combined.stance != "trusted"
+assert blend(own, peer, trust=0).value == own.value
+assert blend(Opinion(), Opinion()).value == UNKNOWN
+full = blend(own, peer, trust=1.0)
+assert abs(full.value - (own.value * own.weight + peer.value * peer.weight)
+           / (own.weight + peer.weight)) < 1e-12
+assert (own.value, own.weight, own.evidence_count, own.last_tested) == own_before
+try:
+    blend(own, peer, trust=1.5)
+    raise AssertionError("trust > 1 must be rejected")
+except ValueError:
+    pass
 
 # ---------------------------------------------------------------------------
 print("\n[5] Invariance check — same curve, different domains")
