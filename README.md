@@ -118,7 +118,8 @@ Over idle time weight decays and value slides back toward +1 at the same rate.
 - **Exact store.** `store.get(digest)` returns exactly what was hashed. Duplicate appends
   are no-ops. The index survives reopening the file.
 - **Two-way ledger.** Incoming capsules and outgoing replies are both stored.
-  Scheduler replies carry `derived_from` pointing at their parent.
+  Scheduler replies carry `derived_from` pointing at their parent. Signed capsules keep
+  their signature in the store, and `store.envelope_of(digest)` verifies from the ledger alone.
 - **Real validation.** Schema, version, clock skew, unknown predicates, incoherent
   intents (an `inform` with no claims), expired claims, merges with fewer than 2 parents.
   Edge messages are checked against `sc_edge.json` on upgrade and downgrade.
@@ -138,8 +139,9 @@ Over idle time weight decays and value slides back toward +1 at the same rate.
 - **Identity isn't bound to keys.** A signature proves *some key* signed a capsule,
   not that the key belongs to `agent://alice`. No registry, no trust-on-first-use, no root of trust.
   Genesis doesn't create or announce a key.
-- **The ledger doesn't keep signatures.** The store saves the capsule, not the envelope.
-  You can prove content from the store, but not who signed it.
+- **Only some ledger entries are signed.** `Store.append(capsule, envelope=wire)` keeps
+  the signature, but `Scheduler.dispatch` has no envelope to pass, and replies aren't signed
+  at all. In the demo, Alice's capsule is stored signed and Bob's ACK unsigned.
 - **Outcomes have nowhere to come from.** `record_outcome` is only called by the demo.
   Capsules have no field for task success or failure.
 - **Stubs.** `_escalate`, `_handle_task_result` and `_handle_threshold` all just ACK.

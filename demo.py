@@ -105,9 +105,12 @@ print(f"  actionable: {actionable(b)}")
 
 # --- store it ---
 print("\n[7] Store append")
-d = store.append(wire["capsule"])
+d = store.append(wire["capsule"], envelope=wire)
 print(f"  digest: {d}")
 print(f"  retrieved matches: {store.get(d) == wire['capsule']}")
+stored_env = store.envelope_of(d)
+print(f"  stored signature verifies: "
+      f"{stored_env is not None and verify(open_envelope(stored_env), alice_pub)}")
 
 # --- merge ---
 print("\n[8] Merge two capsules")

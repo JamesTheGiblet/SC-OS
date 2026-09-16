@@ -68,6 +68,66 @@ def test_prune_drops_expired_and_keeps_stored_at():
     assert s.get(keep) == capsule(2, 86400)
 
 
+def signed(c: dict):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from envelope import sign
+    key = Ed25519PrivateKey.generate()
+    return sign(c, key, pubkey_id="agent://alice").to_wire(), key.public_key()
+
+
+def test_signature_is_kept_and_verifies():
+    from envelope import open_envelope, verify
+    s = new_store()
+    c = capsule(1, 60)
+    wire, pub = signed(c)
+    d = s.append(c, envelope=wire)
+    env = s.envelope_of(d)
+    assert env == wire
+    assert verify(open_envelope(env), pub)
+    reopened = Store(str(s.path))
+    assert verify(open_envelope(reopened.envelope_of(d)), pub)
+
+
+def test_unsigned_then_signed_supersedes_and_signed_is_not_downgraded():
+    s = new_store()
+    c = capsule(1, 60)
+    wire, _ = signed(c)
+    d = s.append(c)
+    assert s.envelope_of(d) is None
+    s.append(c, envelope=wire)
+    s.append(c)                        # unsigned again: no-op
+    s.append(c, envelope=signed(c)[0]) # different signer: first signature kept
+    assert s.envelope_of(d) == wire
+    assert len(s) == 1
+    assert [r["digest"] for r in s.records()] == [d]
+    assert list(s.all()) == [c]
+    assert Store(str(s.path)).envelope_of(d) == wire
+
+
+def test_envelope_for_other_capsule_rejected():
+    s = new_store()
+    wire, _ = signed(capsule(2, 60))
+    try:
+        s.append(capsule(1, 60), envelope=wire)
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass
+    assert len(s) == 0
+
+
+def test_prune_after_supersede_keeps_one_signed_line():
+    s = new_store()
+    c = capsule(1, 86400)
+    wire, _ = signed(c)
+    d = s.append(c)
+    s.append(c, envelope=wire)
+    s.append(capsule(2, 60))
+    assert s.prune_expired(now=T0 + timedelta(hours=1)) == 1
+    lines = [l for l in s.path.read_text().splitlines() if l.strip()]
+    assert len(lines) == 1
+    assert s.envelope_of(d) == wire
+
+
 if __name__ == "__main__":
     tests = [v for k, v in dict(globals()).items() if k.startswith("test_")]
     for fn in tests:

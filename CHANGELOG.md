@@ -8,7 +8,19 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
 
 - `README.md` and this changelog.
 - `tests/test_transport.py`: five asserting tests over real localhost TCP.
-- `tests/test_store.py`: exact round-trip, duplicate appends, reopen, pruning.
+- `tests/test_store.py`: exact round-trip, duplicate appends, reopen, pruning, signatures.
+- **Signatures in the ledger.** `Store.append(capsule, envelope=wire)` saves `sig`, `alg` and
+  `pubkey_id` with the record. `Store.get_record(digest)` returns the full record;
+  `Store.envelope_of(digest)` returns an envelope ready for `open_envelope` / `verify`.
+  An envelope wrapping a different capsule raises `ValueError`. A capsule stored unsigned
+  and appended again with a signature gets a new line that supersedes the old one;
+  a signed record is never replaced. `python -m store` shows `signed:<pubkey_id>` or `unsigned`.
+  The demo stores Alice's capsule signed and verifies it from the store.
+
+### Changed
+
+- `Store.records()` and `Store.all()` yield only current records: superseded and
+  unreadable lines are skipped, matching the index. `--full` dumps the whole record.
 - `SocketTransport.close()`.
 
 ### Fixed

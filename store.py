@@ -1,6 +1,10 @@
 """
 Append-only capsule store. Content-addressed by digest.
 One file per store, JSON Lines format.
+
+A record may carry the envelope signature ({sig, alg, pubkey_id}) so the
+ledger alone proves who signed a capsule. Appending a signed copy of a
+capsule stored unsigned adds a new line that supersedes the old one.
 """
 
 import json
@@ -33,39 +37,64 @@ class Store:
                 except (json.JSONDecodeError, KeyError):
                     continue
 
-    def append(self, capsule_wire: dict) -> str:
+    def append(self, capsule_wire: dict, envelope: dict | None = None) -> str:
+        """
+        Store a capsule. Pass its envelope wire form ({capsule, sig, alg,
+        pubkey_id}) to keep the signature. Same capsule again is a no-op,
+        unless it was stored unsigned and a signature is now available.
+        """
         d = digest(capsule_wire)
+        if envelope is not None and digest(envelope["capsule"]) != d:
+            raise ValueError("envelope does not wrap this capsule")
         if d in self._index:
-            return d   # content-addressed: same bytes, already stored
+            rec = self.get_record(d)
+            if envelope is None or (rec is not None and "envelope" in rec):
+                return d   # content-addressed: same bytes, already stored
         rec = {
             "digest": d,
             "stored_at": datetime.now(timezone.utc).isoformat(),
             "capsule": capsule_wire,
         }
+        if envelope is not None:
+            rec["envelope"] = {
+                "sig": envelope["sig"],
+                "alg": envelope.get("alg", "ed25519"),
+                "pubkey_id": envelope["pubkey_id"],
+            }
         with self.path.open("a") as f:
             f.write(json.dumps(rec, separators=(",", ":")) + "\n")
         self._index[d] = self._next_line
         self._next_line += 1
         return d
 
-    def get(self, digest_hex: str) -> dict | None:
+    def get_record(self, digest_hex: str) -> dict | None:
+        """Full record: digest, stored_at, capsule, and envelope if signed."""
         if digest_hex not in self._index:
             return None
         target = self._index[digest_hex]
         with self.path.open() as f:
             for i, line in enumerate(f):
                 if i == target:
-                    return json.loads(line)["capsule"]
+                    return json.loads(line)
         return None
+
+    def get(self, digest_hex: str) -> dict | None:
+        rec = self.get_record(digest_hex)
+        return rec["capsule"] if rec else None
+
+    def envelope_of(self, digest_hex: str) -> dict | None:
+        """Envelope wire form for open_envelope/verify, or None if unsigned."""
+        rec = self.get_record(digest_hex)
+        if not rec or "envelope" not in rec:
+            return None
+        return {"capsule": rec["capsule"], **rec["envelope"]}
 
     def has(self, digest_hex: str) -> bool:
         return digest_hex in self._index
 
     def all(self) -> Iterator[dict]:
-        with self.path.open() as f:
-            for line in f:
-                if line.strip():
-                    yield json.loads(line)["capsule"]
+        for rec in self.records():
+            yield rec["capsule"]
 
     def prune_expired(self, now: datetime | None = None) -> int:
         """Remove capsules whose action_hints.ttl_seconds has passed."""
@@ -95,11 +124,17 @@ class Store:
         self._load_index()
 
     def records(self) -> Iterator[dict]:
-        """Full records (digest, stored_at, capsule) in log order."""
+        """Current full records in log order; superseded and unreadable lines skipped."""
         with self.path.open() as f:
-            for line in f:
-                if line.strip():
-                    yield json.loads(line)
+            for lineno, line in enumerate(f):
+                if not line.strip():
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if self._index.get(rec.get("digest")) == lineno:
+                    yield rec
 
     def __len__(self) -> int:
         return len(self._index)
@@ -117,9 +152,10 @@ if __name__ == "__main__":
     full = "--full" in sys.argv
     for i, rec in enumerate(Store(args[0]).records()):
         c = rec["capsule"]
+        signed = f"signed:{rec['envelope']['pubkey_id']}" if "envelope" in rec else "unsigned"
         print(f"[{i}] {rec['digest'][:12]}  {rec['stored_at']}  "
               f"{c.get('intent', '?').upper():7} {c.get('from')} -> {c.get('to')}  "
               f"topic={c.get('semantics', {}).get('topic')}  "
-              f"trigger={c.get('trigger')}")
+              f"trigger={c.get('trigger')}  {signed}")
         if full:
-            print(json.dumps(c, indent=2, sort_keys=True))
+            print(json.dumps(rec, indent=2, sort_keys=True))
