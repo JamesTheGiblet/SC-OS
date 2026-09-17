@@ -326,6 +326,93 @@ def test_builtin_rules_load():
     assert [o.receiver for o in fire(sched, temp)] == ["agent://cooler"]
 
 
+# --- families, arbitration and variation ---
+
+def family_setup(explore=0.0, seed=1):
+    import random
+    store = Store(str(Path(tempfile.mkdtemp()) / "alice.db"))
+    engine = RuleEngine(ALICE, store, Ed25519PrivateKey.generate(),
+                        explore=explore, rng=random.Random(seed))
+    sched = Scheduler({ALICE: EchoAgent()}, store, rules=engine)
+    return store, engine, sched
+
+
+def test_family_names():
+    from rules.engine import family
+    assert family("verify-risk") == "verify-risk"
+    assert family("verify-risk--08") == "verify-risk"
+    assert family("verify-risk--08--x") == "verify-risk"
+
+
+def test_vary_issues_one_rule_per_value():
+    store, engine, sched = family_setup()
+    engine.issue("verify-risk", RISK_WHEN, VERIFY_THEN)
+    issued = engine.vary("verify-risk", "when.min_confidence", [0.5, 0.8])
+    assert [name for name, _ in issued] == ["verify-risk--05", "verify-risk--08"]
+    assert all(rule_id for _, rule_id in issued)
+    by_name = {r.name: r for r in engine.rules()}
+    assert by_name["verify-risk--05"].when["min_confidence"] == 0.5
+    assert by_name["verify-risk--08"].when["min_confidence"] == 0.8
+    assert by_name["verify-risk--05"].then == VERIFY_THEN            # everything else is the base rule
+    expect(ValueError, lambda: engine.vary("nothing-here", "when.topic", ["x"]), "no rule named")
+
+
+def test_only_one_of_a_family_fires():
+    store, engine, sched = family_setup()
+    engine.issue("verify-risk", RISK_WHEN, VERIFY_THEN)
+    engine.vary("verify-risk", "when.min_confidence", [0.5, 0.7, 0.8])
+    fired = fire(sched)
+    assert len(fired) == 1                      # the base rule and its variants are one family
+    names = {e[len("rule:"):] for out in fired for e in out.semantics.claims[0].evidence
+             if e.startswith("rule:")}
+    assert len(names) == 1 and names.pop().startswith("verify-risk")
+    assert engine.choices and "of 4" in engine.choices[-1]
+
+
+def test_arbitration_prefers_the_most_trusted_variant():
+    store, engine, sched = family_setup()
+    engine.issue("verify-risk", RISK_WHEN, VERIFY_THEN)
+    ids = dict(engine.vary("verify-risk", "when.min_confidence", [0.5, 0.7]))
+    store.put_opinion(f"rule:{ids['verify-risk--05']}", value=1.8, weight=6.0, evidence_count=6,
+                      last_tested=datetime.now(timezone.utc).isoformat())
+    chosen = engine.arbitrate([r for r in engine.rules() if r.name.startswith("verify-risk--")])
+    assert [r.name for r in chosen] == ["verify-risk--05"]
+    assert "most trusted" in engine.choices[-1]
+
+
+def test_exploration_tries_the_least_tested_variant():
+    store, engine, sched = family_setup(explore=1.0)          # always explore
+    engine.issue("verify-risk", RISK_WHEN, VERIFY_THEN)
+    ids = dict(engine.vary("verify-risk", "when.min_confidence", [0.5, 0.7]))
+    store.put_opinion(f"rule:{ids['verify-risk--05']}", value=1.9, weight=9.0, evidence_count=9,
+                      last_tested=datetime.now(timezone.utc).isoformat())
+    chosen = engine.arbitrate([r for r in engine.rules() if r.name.startswith("verify-risk--")])
+    assert [r.name for r in chosen] == ["verify-risk--07"]     # untested, despite the other's trust
+    assert "exploring" in engine.choices[-1]
+
+
+def test_an_outcome_credits_only_the_variant_that_fired():
+    store, engine, sched = family_setup()
+    ids = dict([("verify-risk", engine.issue("verify-risk", RISK_WHEN, VERIFY_THEN))])
+    ids.update(dict(engine.vary("verify-risk", "when.min_confidence", [0.5, 0.7])))
+    task = next(o for o in fire(sched)
+                if any(e.startswith("rule:verify-risk--") for e in o.semantics.claims[0].evidence))
+    fired = next(e[len("rule:"):] for e in task.semantics.claims[0].evidence if e.startswith("rule:"))
+    sched.dispatch(result_for(task, "success"))
+    assert rule_row(store, ids[fired])["evidence_count"] == 1
+    other = next(name for name in ("verify-risk--05", "verify-risk--07") if name != fired)
+    assert rule_row(store, ids[other])["evidence_count"] == 0
+
+
+def test_rules_in_different_families_all_fire():
+    store, engine, sched = family_setup()
+    engine.issue("verify-risk", RISK_WHEN, VERIFY_THEN)
+    engine.issue("note-risk", RISK_WHEN, [{"intent": "inform", "to": "{from}", "trigger": "none",
+                                           "topic": "{topic}",
+                                           "claims": [{"type": "observation", "statement": "noted {claim}"}]}])
+    assert len(fire(sched)) == 2
+
+
 if __name__ == "__main__":
     tests = [v for k, v in dict(globals()).items() if k.startswith("test_")]
     for fn in tests:

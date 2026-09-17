@@ -56,6 +56,15 @@ up across a process boundary.
   USB, clock correct; 10 frames sent back to back with no gap all arrived while the screen redrew.
   Found on the device and fixed: 40 MHz SPI on the screen's pins crashed the firmware in a boot
   loop (the limit on those pins is 26.7 MHz; it now uses 20 MHz).
+- **Rule families: variants that compete** (arbitration and variation). A rule named
+  `family--variant` belongs to that family. `RuleEngine.vary(name, path, values)` and
+  `python -m rules vary` issue one rule per value of a dotted path in an existing rule's spec.
+  `RuleEngine.arbitrate` fires one rule per family per capsule: the most trusted, or with
+  probability `explore` (0.2) one of the least tested; `choices` records why. Different families
+  still fire independently, and an outcome credits the variant that fired.
+  Simulated over 120 reports where only confidence ≥ 0.8 was worth verifying: `verify-risk--08`
+  reached +2.00 with 31 outcomes while the looser variants went negative and stopped firing, with
+  no one saying which threshold was right. Tests: 7 more in `tests/test_rules.py`. 170 tests.
 - **Front edge detection on the M5.** Digital IR reflectance modules looking down, described in
   `EDGE_DESCRIPTION` (left on G26 so far; right on G36 needs an external 10 kΩ pull-up). `EdgeSensors`
   confirms an edge after 3 consecutive samples. The stick acts locally first (three beeps, a red
@@ -292,7 +301,8 @@ up across a process boundary.
 - Two machines checked by hand on one Wi-Fi hotspot only: no NAT, no lossy links, no automated test.
 - The self-description isn't shared with peers, expires after 7 days, and nothing reruns it.
 - A reported outcome is the worker's word; nothing checks it's true.
-- Rules don't chain.
+- Rules don't chain, nothing proposes new rules (variants sweep a parameter you pick), and a
+  silenced variant keeps its row in the ledger for months because failures add weight.
 
 ### The ugly
 

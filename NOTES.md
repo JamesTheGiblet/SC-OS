@@ -118,6 +118,13 @@ Each decision was made against the code as it stood; revisit only with a reason.
   automatically, so counting them would be receipt-as-evidence.
 - **Rules don't chain.** A rule never fires on another rule's output, so no loops. Revisit with a
   depth limit if multi-step rules are needed.
+- **One rule per family fires.** Variants of a job (`family--variant`) compete: the most trusted
+  usually, one of the least tested with probability `explore`. Chosen so trust can select between
+  behaviours, not only kill them; without it every variant answers the same capsule at once.
+  Different families are different jobs and still fire independently.
+- **Variation is a parameter sweep, on purpose.** `vary` changes one dotted path of a spec you
+  wrote. Generating rules from nothing would need a way to judge a rule before trying it, which is
+  what outcomes are for; sweeping keeps the search where outcomes can settle it.
 - **Merge keeps the trigger** of the first parent, or the second's if the first is `none`.
   No strength ordering between triggers yet.
 - **Version choice is numeric.** Highest shared version wins by number, not string sort.
@@ -180,6 +187,12 @@ Each decision was made against the code as it stood; revisit only with a reason.
 - **Signing in the kernel.** `Peer` signs; `Scheduler` alone stores unsigned replies. Should the
   scheduler own a key?
 - **Trigger strength.** Should merge prefer `stuck` over `threshold` over the rest?
+- **Forgetting a silenced rule.** A variant whose value falls to 0 stops firing, but its failures
+  gave it weight, and weight keeps it alive: it can sit in the ledger for months. Should a rule that
+  can no longer fire decay faster, or be forgotten outright after a grace period?
+- **Where new rules come from.** `vary` sweeps a parameter of an existing rule. Nothing proposes a
+  new `when` or `then`. Mutation of the spec, recombination of two trusted rules, or a person
+  writing them?
 - **Plausible but wrong.** Plausibility checks can't catch a sensor that is steadily off. A second
   sensor of the same kind, or an operator's reference reading, would. Worth it?
 - **Pruning elsewhere.** Alice prunes hourly; the gateway's ledger and other nodes don't.
@@ -198,11 +211,16 @@ Each decision was made against the code as it stood; revisit only with a reason.
    accelerometer, gyroscope, IMU temperature, battery, link state and the waiting task. Still
    open: ESP-NOW between two boards (the gateway radio), and from step 3: NAT and reconnecting
    within one server process after a silent drop.
-2. **Make `hal/` an interface.** Protocols for transport, clock and a sensor bus; move
+2. **Purpose from margins.** Being outside a margin is pressure, returning inside is success:
+   outcomes the system generates itself, instead of a person pressing A or B. Needs the legs.
+3. **Composition:** rules firing on rule outputs with a depth limit, so behaviour can build on
+   behaviour.
+4. **Credit over time:** an outcome crediting a sequence of steps, not one.
+5. **Make `hal/` an interface.** Protocols for transport, clock and a sensor bus; move
    implementations out; a simulated sensor bus for the laptop.
-3. **Bootstrap:** signed, stored genesis, then `__hardware__`, `__setup__`, `__sensors__`.
-4. **Merged sender** decision (merge output currently fails validation).
-5. **Relaying and a reply queue**, which turn the star into a network.
+6. **Bootstrap:** signed, stored genesis, then `__hardware__`, `__setup__`, `__sensors__`.
+7. **Merged sender** decision (merge output currently fails validation).
+8. **Relaying and a reply queue**, which turn the star into a network.
 
 ## Housekeeping
 

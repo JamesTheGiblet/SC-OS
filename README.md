@@ -76,6 +76,7 @@ isn't refreshed expires. `--no-tests` leaves earlier test results alone.
 python -m rules list     --node alice                      # rules, trust, whether each fires
 python -m rules issue    --node alice rules/builtin.json   # sign and store rules (--force revives forgotten ones)
 python -m rules maintain --node alice                      # forget faded rules, re-issue live ones
+python -m rules vary     --node alice verify-high-confidence-risk when.min_confidence 0.6 0.8 0.95
 ```
 
 A rule is a capsule on topic `rule.<name>`, signed by the node that runs it. Its directive claim
@@ -108,6 +109,18 @@ holds a JSON spec: a `when` pattern over incoming capsules and the capsules to e
   capsule TTL runs out. A tested rule is forgotten once its decayed weight falls below 0.05; an
   untested rule gets 30 days. Forgotten rules stay forgotten across restarts unless issued with
   `--force`. Editing a rule makes a new rule (new id, `derived_from` the old one) that starts at unknown.
+
+**Variants compete.** A rule named `family--variant` belongs to that family: `vary` issues one rule
+per value of a dotted path in the spec, each an ordinary rule with its own trust. When several rules
+of a family match the same capsule only one fires, so the family answers once: usually the most
+trusted, and one time in five (`explore`) one of the least tested instead. Rules in different
+families still fire independently. An outcome credits the variant that fired; the others fade.
+`RuleEngine.choices` records each decision.
+
+Simulated with 120 reports whose confidence varied, where the world counted a report worth verifying
+only at confidence ≥ 0.8: `verify-risk--08` reached +2.00 (trusted, 31 outcomes), `--09` +1.40, and
+the variants that demanded less went to −0.10 or −0.20 and stopped firing. Nobody told the system
+which threshold was right.
 
 `run_alice.py` issues `rules/builtin.json` at start and maintains rules hourly.
 `run_bob.py` carries out a task a rule asks for and reports `--outcome success|failure|ignore`.
@@ -411,7 +424,7 @@ sqlite3 store/alice.db "SELECT json_extract(capsule, '$.semantics.claims[0].stat
 python tests/test_store.py          # 15: round-trip, signatures, find, pruning and disk space, import, concurrent writers
 python tests/test_transport.py      # 9:  framing, many peers at once, concurrent sends (real localhost TCP)
 python tests/test_peer.py           # 17: pinning, rejections, replay, session binding, concurrent sessions
-python tests/test_rules.py          # 19: patterns, firing and provenance, own rules only, outcomes, lifetime
+python tests/test_rules.py          # 26: patterns, firing and provenance, own rules only, outcomes, lifetime, families and arbitration
 python tests/test_self_describe.py  # 6:  valid capsules, every file described, versions chain, rerun stores nothing
 python tests/test_weight.py         # 14: the curve, success/failure/idle trajectories, stepwise ticks, sharing rule, domains
 python tests/test_validator.py      # 13: every rejection code: schema, version, clock skew, vocab, coherence, provenance, outcome
@@ -421,7 +434,7 @@ python tests/test_network.py        # 6:  peers.json, clock offset, any working 
 python tests/test_gateway.py        # 13: edge outcome fields, device outcome teaches Alice's rule, rejections, session drop, firmware protocol, sensor lists
 python tests/test_sensing.py        # 13: each plausibility check, one outcome per window, scheduler observers, readings through the gateway
 python tests/test_provision.py      # 9:  setup checks, issuing, resending until applied, firmware applying, the whole loop
-python -m pytest tests              # all 163
+python -m pytest tests              # all 170
 ```
 
 ## What a capsule looks like
@@ -603,6 +616,11 @@ your own evidence count and decay clock. Never store it as your opinion.
   that it's true: an agent that always reports success makes a bad rule look good.
 - **Rules don't chain.** A rule never fires on another rule's output. That prevents loops, but
   multi-step reasoning needs a person or agent in between.
+- **Nothing proposes rules.** `vary` sweeps a parameter you choose, on a rule you wrote. The system
+  selects among variants but never invents one, so no behaviour appears that you didn't specify.
+- **A silenced rule isn't forgotten.** Failures add weight, and weight keeps a rule alive, so a
+  variant that stops firing (value ≤ 0) can sit in the ledger for months. It costs a row and a
+  little load time, nothing more.
 - **Hints aren't wired in.** Nothing fills a capsule's `epistemic` block from the sender's
   opinion, and the scheduler never calls `blend`.
 - **Stubs.** `_escalate` and `_handle_threshold` just ACK (rules can act on those capsules instead).

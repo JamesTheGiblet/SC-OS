@@ -42,6 +42,16 @@ Lifetime (tied to Leighton Weight)
     capsule expires normally. Issuing a forgotten rule again needs force=True.
     Run maintain() before pruning the store.
 
+Families and arbitration
+    A rule named "family--variant" belongs to that family: variants of one job that
+    differ in a parameter. When several rules of a family match the same capsule,
+    only one fires, so variants compete instead of all answering at once:
+        exploit   the most trusted (highest value, then weight)
+        explore   with probability `explore`, one of the least tested instead
+    Rules in different families still fire independently: they are different jobs.
+    Each choice is recorded in `choices`. Variants are ordinary rules, so an
+    outcome credits the one that fired, and the losers fade and are forgotten.
+
 Adopting
     A rule capsule from a peer never runs. adopt() re-issues its spec as this
     node's own rule, which starts at unknown and earns its own trust.
@@ -49,6 +59,7 @@ Adopting
 
 import dataclasses
 import json
+import random
 import re
 import uuid
 from dataclasses import dataclass
@@ -75,6 +86,8 @@ FIRE_ABOVE_VALUE = 0.0                    # wary (<= 0) and distrusted rules don
 EPSILON = 1e-9                            # 1.0 - 5 x 0.2 is 1.1e-16 in floating point, not 0
 MAX_SPEC_CHARS = 2000
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+FAMILY_SEP = "--"                         # "verify-risk--conf80" is a variant of "verify-risk"
+EXPLORE = 0.2                             # how often a family tries a less tested variant
 ID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "https://semantic-capsule.dev/sc-os/rules")
 
 EMIT_KEYS = {"intent", "to", "trigger", "topic", "claims", "ttl_seconds", "priority", "requires_ack"}
@@ -136,12 +149,16 @@ class Rule:
 
 
 class RuleEngine:
-    def __init__(self, owner: str, store: Store, key: Ed25519PrivateKey):
+    def __init__(self, owner: str, store: Store, key: Ed25519PrivateKey,
+                 explore: float = EXPLORE, rng: random.Random | None = None):
         self.owner = owner
         self.store = store
         self.key = key
         self.public_key = key.public_key()
         self.problems: list[str] = []          # rules skipped at load, outputs that failed validation
+        self.explore = explore                 # chance a family tries a less tested variant
+        self.rng = rng or random.Random()
+        self.choices: list[str] = []           # what arbitration picked, most recent last
 
     # --- authoring ---
 
@@ -236,9 +253,8 @@ class RuleEngine:
         if c.receiver != self.owner or c.sender == self.owner or c.provenance.method == "rule":
             return []
         out: list[Capsule] = []
-        for rule in self.rules(now):
-            if not _fires(rule.opinion) or not matches(rule.when, c):
-                continue
+        for rule in self.arbitrate([r for r in self.rules(now)
+                                    if _fires(r.opinion) and matches(r.when, c)]):
             for i, template in enumerate(rule.then):
                 out_id = f"urn:uuid:{uuid.uuid5(ID_NAMESPACE, f'{rule.id}|{c.id}|{i}')}"
                 if self.store.find(capsule_id=out_id):
@@ -251,6 +267,47 @@ class RuleEngine:
                     continue
                 out.append(emitted)
         return out
+
+    def vary(self, name: str, path: str, values: list, *, force: bool = False,
+             now: datetime | None = None) -> list[tuple[str, str | None]]:
+        """
+        Issue variants of an existing rule that differ in one dotted path of its spec,
+        e.g. vary("verify-risk", "when.min_confidence", [0.6, 0.8, 0.95]) issues
+        verify-risk--06, --08 and --095. They compete: one of a family fires at a time.
+        Returns (name, id or None if that variant was forgotten earlier).
+        """
+        record = self._latest_by_name().get(name)
+        if record is None:
+            raise ValueError(f"no rule named {name!r} to vary")
+        spec, description = self._spec_of(record["capsule"])
+        issued = []
+        for label, when, then in variants(spec, spec["when"], spec["then"], path, values):
+            variant = f"{family(name)}{FAMILY_SEP}{label}"
+            issued.append((variant, self.issue(variant, when, then,
+                                               description or f"variant of {name}: {path}={label}",
+                                               force=force, now=now)))
+        return issued
+
+    def arbitrate(self, matching: list["Rule"]) -> list["Rule"]:
+        """One rule per family: the most trusted, or now and then a less tested variant."""
+        families: dict[str, list[Rule]] = {}
+        for rule in matching:
+            families.setdefault(family(rule.name), []).append(rule)
+        picked = []
+        for name, candidates in sorted(families.items()):
+            if len(candidates) == 1:
+                picked.append(candidates[0])
+                continue
+            least = min(r.opinion.evidence_count for r in candidates)
+            if self.rng.random() < self.explore:
+                choice = self.rng.choice([r for r in candidates if r.opinion.evidence_count == least])
+                why = f"exploring (n={choice.opinion.evidence_count})"
+            else:
+                choice = max(candidates, key=lambda r: (r.opinion.value, r.opinion.weight, r.name))
+                why = f"most trusted (value={choice.opinion.value:+.2f}, n={choice.opinion.evidence_count})"
+            self.choices.append(f"{name}: {choice.name} of {len(candidates)}, {why}")
+            picked.append(choice)
+        return picked
 
     def _emit(self, rule: Rule, t: dict, c: Capsule, out_id: str, now: datetime) -> Capsule:
         best = max(c.semantics.claims, key=lambda cl: cl.confidence, default=None)
@@ -382,6 +439,33 @@ class RuleEngine:
         description = next((cl["statement"] for cl in claims if cl["type"] == "observation"), "")
         spec = json.loads(directive["statement"])
         return spec, description
+
+
+def family(name: str) -> str:
+    """The family a rule name belongs to: everything before the first "--"."""
+    return name.split(FAMILY_SEP)[0]
+
+
+def variants(specs: dict, base_when: dict, base_then: list, path: str, values: list) -> list[tuple]:
+    """
+    (name suffix, when, then) for each value of one dotted path in a rule's spec,
+    e.g. path "when.min_confidence" or "then.0.ttl_seconds".
+    """
+    out = []
+    for value in values:
+        when, then = json.loads(json.dumps(base_when)), json.loads(json.dumps(base_then))
+        target = {"when": when, "then": then}
+        keys = path.split(".")
+        for key in keys[:-1]:
+            target = target[int(key)] if isinstance(target, list) else target[key]
+        last = keys[-1]
+        if isinstance(target, list):
+            target[int(last)] = value
+        else:
+            target[last] = value
+        label = str(value).replace(".", "").replace("-", "m").lower()[:16]
+        out.append((label, when, then))
+    return out
 
 
 def _fires(opinion: Opinion) -> bool:

@@ -4,6 +4,7 @@ Manage a node's rules.
     python -m rules list     --node alice
     python -m rules issue    --node alice rules/builtin.json [--force]
     python -m rules maintain --node alice
+    python -m rules vary     --node alice verify-high-confidence-risk when.min_confidence 0.6 0.8 0.95
 
 The node's ledger is store/<node>.db and its key keys/<node>.ed25519.
 """
@@ -38,8 +39,10 @@ def engine_for(node: str) -> RuleEngine:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Manage a node's rules.")
-    ap.add_argument("command", choices=["list", "issue", "maintain"])
-    ap.add_argument("file", nargs="?", help="rule file for issue")
+    ap.add_argument("command", choices=["list", "issue", "maintain", "vary"])
+    ap.add_argument("file", nargs="?", help="rule file for issue; rule name for vary")
+    ap.add_argument("path", nargs="?", help="vary: dotted path in the spec, e.g. when.min_confidence")
+    ap.add_argument("values", nargs="*", help="vary: the values to try")
     ap.add_argument("--node", default="alice")
     ap.add_argument("--force", action="store_true", help="issue: revive forgotten rules")
     args = ap.parse_args()
@@ -51,6 +54,20 @@ def main() -> int:
         if not args.file:
             ap.error("issue needs a rule file")
         for name, rule_id in load_rule_file(engine, args.file, args.force):
+            print(f"  {name:32} {'issued ' + rule_id[-12:] if rule_id else 'forgotten (use --force)'}")
+    elif args.command == "vary":
+        if not (args.file and args.path and args.values):
+            ap.error("vary needs a rule name, a dotted path and at least one value")
+        try:
+            values = [json.loads(v) for v in args.values]        # numbers, strings, lists
+        except json.JSONDecodeError:
+            values = args.values
+        try:
+            issued = engine.vary(args.file, args.path, values, force=args.force)
+        except (ValueError, KeyError, IndexError, TypeError) as e:
+            print(f"  cannot vary {args.file}: {e}")
+            return 1
+        for name, rule_id in issued:
             print(f"  {name:32} {'issued ' + rule_id[-12:] if rule_id else 'forgotten (use --force)'}")
     elif args.command == "maintain":
         for what, names in engine.maintain().items():
