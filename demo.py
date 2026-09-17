@@ -23,7 +23,6 @@ from scheduler import Scheduler
 from agents.echo import EchoAgent
 from boot.genesis import genesis
 from edge.upgrade import from_edge_wire, to_edge_wire
-from weight import Opinion
 
 print("=" * 72)
 print("SC-OS DEMO")
@@ -155,7 +154,7 @@ print(f"  store size now: {len(store)}")
 
 # --- epistemic ---
 print("\n[10] Leighton Weight — epistemic state")
-op = sched.opinions.get("supply_chain_risk", Opinion())
+op = sched.opinion("supply_chain_risk")
 print(f"  after receipt only: value={op.value:+.3f} weight={op.weight:.3f} "
       f"n={op.evidence_count} stance={op.stance}")
 

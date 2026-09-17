@@ -1,8 +1,12 @@
 """
 Client side. Start run_alice.py first.
 
-    python run_bob.py [--name bob] [--host 127.0.0.1] [--port 7707]
+    python run_bob.py [--name bob] [--host HOST] [--port 7707]
                       [--hold SECONDS] [--outcome success|failure|ignore] [--replay]
+
+--host defaults to the first entry in peers.json next to this script
+({"peers": ["192.168.1.20:7707"]}), else 127.0.0.1. Keys, pins and the ledger
+are found next to this script, whatever directory it's started from.
 
 Connects as agent://<name>, sends a hello with its key, checks Alice's
 hello against the pin, sends a signed capsule, and waits for Alice's signed
@@ -22,10 +26,12 @@ import socket
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
+from boot.discovery import load_peers, parse_peer
 from boot.genesis import genesis
 from hal.transport import SocketTransport
-from handshake import TOPIC as HELLO_TOPIC, negotiate
+from handshake import TOPIC as HELLO_TOPIC, clock_offset, negotiate
 from interpreter import render
 from peer import Node, PeerRejected
 from primitive import (
@@ -36,6 +42,9 @@ from store import Store
 from validator import CapsuleRejected
 
 ALICE = "agent://alice"
+ROOT = Path(__file__).resolve().parent
+DEFAULT_PORT = 7707
+CLOCK_WARN_SECONDS = 5
 
 
 def connect(host: str, port: int, wait_s: float = 10.0) -> SocketTransport:
@@ -52,8 +61,8 @@ def connect(host: str, port: int, wait_s: float = 10.0) -> SocketTransport:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", default="bob")
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=7707)
+    ap.add_argument("--host", help="Alice's address (default: peers.json, else 127.0.0.1)")
+    ap.add_argument("--port", type=int)
     ap.add_argument("--hold", type=float, default=0.0)
     ap.add_argument("--outcome", choices=["success", "failure", "ignore"], default="success")
     ap.add_argument("--replay", action="store_true")
@@ -66,11 +75,25 @@ def main() -> int:
     def log(msg: str) -> None:
         print(f"{prefix}{msg}", flush=True)
 
+    host, port = args.host, args.port
+    if host is None:
+        peers = load_peers(str(ROOT / "peers.json"))
+        host, peers_port = parse_peer(peers[0], DEFAULT_PORT) if peers else ("127.0.0.1", DEFAULT_PORT)
+        port = port or peers_port
+    port = port or DEFAULT_PORT
+
     log(f"genesis: {render(genesis(args.name)).splitlines()[0]}")
-    store = Store(f"store/{args.name}.db")
-    transport = connect(args.host, args.port)
-    peer = Node(me, store).session(transport)
-    log(f"connected to {args.host}:{args.port}")
+    store = Store(str(ROOT / "store" / f"{args.name}.db"))
+    try:
+        transport = connect(host, port)
+    except OSError as e:
+        log(f"FAIL cannot reach {host}:{port} ({e}). Is Alice running with --host 0.0.0.0, "
+            f"is the port open in her firewall, and are both machines on the same network?")
+        return 1
+    node = Node(me, store, key_dir=str(ROOT / "keys"),
+                pins_path=str(ROOT / "store" / f"{args.name}.pins.json"))
+    peer = node.session(transport)
+    log(f"connected to {host}:{port}")
 
     try:
         local_hello = peer.hello(ALICE)
@@ -82,6 +105,10 @@ def main() -> int:
         agreed = negotiate(local_hello, remote_hello)
         pin = "first contact, key pinned" if peer.last_pin == "new" else "key matches pin"
         log(f"hello from {ALICE}, {pin}; agreed capsule_version={agreed['capsule_version']}")
+        offset = clock_offset(remote_hello)
+        if abs(offset) > CLOCK_WARN_SECONDS:
+            log(f"WARNING Alice's clock is {abs(offset):.1f} s {'ahead of' if offset > 0 else 'behind'} "
+                f"ours; capsules more than 30 s in the future are rejected")
 
         if args.hold:
             time.sleep(args.hold)

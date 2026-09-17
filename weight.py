@@ -66,11 +66,13 @@ class Opinion:
     weight: conviction on [0, inf)
     evidence_count: how many reinforcements so far
     last_tested: when reinforcement last occurred
+    decayed_to: the time value and weight were last decayed to (None: last_tested)
     """
     value: float = UNKNOWN
     weight: float = 0.0
     evidence_count: int = 0
     last_tested: Optional[datetime] = None
+    decayed_to: Optional[datetime] = None
 
     def __post_init__(self):
         if not (VALUE_MIN <= self.value <= VALUE_MAX):
@@ -105,6 +107,7 @@ class Opinion:
 
         self.evidence_count += 1
         self.last_tested = now
+        self.decayed_to = now
 
     # --- drift ---
 
@@ -118,13 +121,18 @@ class Opinion:
     ) -> None:
         """
         Advance time. Weight decays; value drifts toward UNKNOWN in proportion.
+
+        Decays from where the last tick left off, so ticking at day 7 and then
+        day 30 gives the same result as ticking once at day 30.
         """
-        if self.last_tested is None:
+        start = self.decayed_to or self.last_tested
+        if start is None:
             return
         now = now or datetime.now(timezone.utc)
-        dt = (now - self.last_tested).total_seconds()
+        dt = (now - start).total_seconds()
         if dt <= 0:
             return
+        self.decayed_to = now
         t = dt / dt_unit_seconds
 
         k = decay_constant(k0, self.evidence_count, stakes_factor)
@@ -185,4 +193,5 @@ def blend(own: Opinion, peer: Opinion, trust: float = 0.1) -> Opinion:
         weight=total,
         evidence_count=own.evidence_count,
         last_tested=own.last_tested,
+        decayed_to=own.decayed_to,
     )

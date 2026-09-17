@@ -9,7 +9,7 @@ The "OS" is the kernel that routes capsules between agents; the capsule protocol
 handles several peers at once over TCP, with signed capsules, pinned keys, replay protection and a
 SQLite ledger. Rules are capsules too: they fire on incoming capsules and gain or lose trust from
 reported outcomes. SC-OS also records its own code, docs and test results as capsules. Tested with three nodes on
-one machine; it hasn't crossed two machines yet.
+one machine, including over its network address rather than loopback; it hasn't crossed two machines yet.
 Read [the good, the bad, and the ugly](#the-good-the-bad-and-the-ugly) before building on it.
 
 ## Why capsules
@@ -123,7 +123,8 @@ python run_bob.py --outcome failure           # report failure for the task Alic
 ```
 
 All accept `--host` and `--port`. `run_alice.py --sessions N` exits after N sessions end.
-Clients retry the connection for 10 seconds. A session goes:
+Clients retry the connection for 10 seconds, then say what to check. Keys, pins and ledgers are
+found next to the scripts, so it doesn't matter which directory you start them from. A session goes:
 
 1. Bob sends a hello carrying his public key. Alice pins it, or checks it against her pin.
 2. Alice answers with her own hello and key. Bob does the same.
@@ -142,11 +143,34 @@ Replies are routed by `to` through the table of open sessions. An agent can have
 session at a time, and any rejection closes that session only. Logged timings cover signing,
 sending, verifying and dispatch, not just network time.
 
+### Two machines
+
+Same code on both. On the server machine:
+
+```sh
+python run_alice.py --host 0.0.0.0            # prints: other machines can connect to: 192.168.1.20:7707
+```
+
+Allow the port through that machine's firewall (on Windows, accept the prompt for Python on
+private networks). On the other machine, give the address once:
+
+```sh
+python run_bob.py --host 192.168.1.20
+# or put it in peers.json next to run_bob.py, then plain `python run_bob.py`:
+#   {"peers": ["192.168.1.20:7707"]}
+```
+
+Both sides log a warning if the other's clock is more than 5 s off. Capsules created more than
+30 s in the receiver's future are rejected, so sync clocks (NTP) before blaming the network.
+First contact pins each side's key; a machine that regenerates its key (a new `keys/` directory)
+is rejected until the other side deletes that pin.
+
 ### Where state lives
 
 | Path | Contents | In git |
 | --- | --- | --- |
-| `store/<name>.db` | SQLite ledger: every capsule sent or received, with signatures; plus the node's opinions (rule trust) and counted outcomes | no |
+| `store/<name>.db` | SQLite ledger: every capsule sent or received, with signatures; plus the node's opinions (rule trust and topic opinions) and counted outcomes | no |
+| `peers.json` | Where `run_bob.py` connects when no `--host` is given | no |
 | `store/<name>.pins.json` | Agent id → pinned public key. Delete to forget a peer. | no |
 | `keys/<name>.ed25519` | The node's private key | no |
 | `store/self.db`, `keys/sc-os.ed25519` | SC-OS's self-description and the key that signs it | no |
@@ -184,13 +208,12 @@ python tests/test_transport.py      # 9:  framing, many peers at once, concurren
 python tests/test_peer.py           # 17: pinning, rejections, replay, session binding, concurrent sessions
 python tests/test_rules.py          # 19: patterns, firing and provenance, own rules only, outcomes, lifetime
 python tests/test_self_describe.py  # 6:  valid capsules, every file described, versions chain, rerun stores nothing
-```
-
-Weight model walkthrough (prints trajectories; the sharing-rule section asserts):
-
-```sh
-PYTHONPATH=. python tests/test_weight.py            # bash
-$env:PYTHONPATH="."; python tests\test_weight.py    # PowerShell
+python tests/test_weight.py         # 14: the curve, success/failure/idle trajectories, stepwise ticks, sharing rule, domains
+python tests/test_validator.py      # 13: every rejection code: schema, version, clock skew, vocab, coherence, provenance, outcome
+python tests/test_interpreter.py    # 13: exact wire round-trip, stable digests, expiry, actionable, merge
+python tests/test_scheduler.py      # 14: routing, ledger, replies, verified outcomes only, opinions survive restart
+python tests/test_network.py        # 6:  peers.json, clock offset, any working directory, session over a network address
+python -m pytest tests              # all 126
 ```
 
 ## What a capsule looks like
@@ -267,20 +290,21 @@ Capsule ─to_wire─► dict ─sign─► envelope ──TCP──► Peer.rec
 | `scheduler.py` | Kernel: stores in and out, routes by trigger, fires rules, turns verified task outcomes into opinions |
 | `rules/` | `engine.py` (issue, load, fire, learn, maintain), `pattern.py` (`when` matching), `builtin.json` (starter rules), `python -m rules` |
 | `weight.py` | Leighton Weight: exponential decay, `Opinion` (value + weight), `blend` |
-| `handshake.py` | Hello capsule, version and predicate negotiation |
+| `handshake.py` | Hello capsule, version and predicate negotiation, `clock_offset` |
 | `run_alice.py`, `run_bob.py` | Multi-peer server; client that runs as any `--name` |
 | `demo.py` | Single-process walkthrough of the whole pipeline |
 | `boot/genesis.py` | A node's first capsule |
+| `boot/discovery.py` | `peers.json` (`host:port` entries), `parse_peer` |
 | `edge/upgrade.py`, `edge/sc_edge.json` | Stripped ESP-NOW wire form (≤16/32/120-char fields) and conversion |
 | `agents/` | `EchoAgent`, `RelayAgent` |
-| `hal/` | `FileTransport`, `SocketTransport`, `SocketListener` (many peers), clock, storage re-export |
+| `hal/` | `FileTransport`, `SocketTransport`, `SocketListener` (many peers), `local_addresses`, clock, storage re-export |
 | `leighton_weight_readme.py` | The decay theory, draft |
 | `NOTES.md` | Design decisions, open questions, what's next |
 
 ### Leighton Weight in one paragraph
 
 `W(t) = W0 · e^(−k·t)`, with `k = k0 / (1 + evidence) / stakes`. Each agent keeps a
-private `Opinion` per topic: `value` on [−2, +2] where **+1 means unknown**, and `weight`
+private `Opinion` per topic, saved in its database: `value` on [−2, +2] where **+1 means unknown**, and `weight`
 (conviction) ≥ 0. A success adds +0.1 value and +1 weight; a failure −0.2 and +3.
 Over idle time weight decays and value slides back toward +1 at the same rate.
 **Receiving a capsule is not evidence.** Only `Scheduler.record_outcome()` moves an opinion.
@@ -360,17 +384,15 @@ your own evidence count and decay clock. Never store it as your opinion.
 - **An outcome is the worker's word.** A rule learns from what the agent asked to do the task
   reports. Alice checks that the report comes from that agent and counts it once, but can't check
   that it's true: an agent that always reports success makes a bad rule look good.
-- **Topic opinions aren't saved.** Rule trust is stored in the database; the scheduler's per-topic
-  opinions live in memory and reset when the node restarts.
 - **Rules don't chain.** A rule never fires on another rule's output. That prevents loops, but
   multi-step reasoning needs a person or agent in between.
 - **Hints aren't wired in.** Nothing fills a capsule's `epistemic` block from the sender's
   opinion, and the scheduler never calls `blend`.
 - **Stubs.** `_escalate` and `_handle_threshold` just ACK (rules can act on those capsules instead).
-  `boot/discovery.py` (reads `peers.json`), `RelayAgent` and `hal/clock.py` are unused.
-- **Tests cover the edges more than the kernel.** Store, transport, peer, rules and
-  self-describe tests assert. `tests/test_weight.py` mostly prints; only its sharing-rule section asserts. Validator,
-  interpreter, merge and scheduler have no asserting tests; their check is the demo trace.
+  `RelayAgent` and `hal/clock.py` are unused.
+- **No test runs across two machines.** Tests and runs used one machine, once over its network
+  address instead of loopback. Real latency, packet loss, NAT and Windows/Linux differences are
+  untested. The run scripts and `EchoAgent` have no asserting tests beyond the network checks.
 - **The self-description stays home and must be refreshed.** `self.*` capsules live only in
   `store/self.db`; no node sends them to peers. They expire after 7 days, and nothing reruns
   `self_describe.py` automatically.
@@ -384,8 +406,9 @@ your own evidence count and decay clock. Never store it as your opinion.
   and you get none of it.
 - **Some provenance is missing.** Agent replies (`EchoAgent`) and `from_edge_wire` don't set
   `derived_from`. `Provenance.signature` is always `null` and unrelated to the envelope signature.
-- **Merged sender is a string join.** `merge` produces `agent://alice+agent://bob`,
-  which isn't an addressable agent.
+- **No merged capsule is valid.** `merge` joins senders into `agent://alice+agent://bob` (even
+  `agent://bob+agent://bob` for one sender), which the schema rejects. Merge works only on capsules
+  you never validate.
 - **Self-description parses doc headings by name.** Decisions, open questions, next steps and
   limits are read from `## Decisions`, `## Open questions`, `## Next` in `NOTES.md` and
   `### The bad` / `### The ugly` in this README. Rename a heading and that capsule silently
@@ -396,20 +419,21 @@ your own evidence count and decay clock. Never store it as your opinion.
   Workaround: `PYTHONIOENCODING=utf-8`.
 - **Edge devices can't report outcomes.** The stripped ESP-NOW format has no outcome field, so an
   edge message with trigger `task_result` upgrades to a capsule Alice refuses (`unknown_task`).
-- **Rule trust lives only in the node's database.** Delete `store/<name>.db` and every rule starts
-  over at unknown; there's no backup or export of opinions.
+- **Trust lives only in the node's database.** Delete `store/<name>.db` and every rule and topic
+  opinion starts over at unknown; there's no backup or export of opinions.
 
 ## Roadmap
 
 1. ~~Fix `SocketTransport` framing.~~ Done.
-2. ~~Two-process test.~~ ~~Three nodes.~~ Done on one machine. **Next: two machines.**
+2. ~~Two-process test.~~ ~~Three nodes.~~ Done on one machine. **Next: two machines** (scripts
+   ready: `--host 0.0.0.0`, `peers.json`, clock warnings; see [Two machines](#two-machines)).
 3. Identity binding: ~~trust on first use~~ done; key registry or root of trust, key rotation.
 4. ~~Replay protection.~~ Done.
 5. ~~SQLite ledger.~~ Done. Next: prune on a schedule.
-6. ~~Outcome field on `task_result` capsules.~~ Done, with rules that learn from it. Next: edge
-   devices reporting outcomes, and persisting topic opinions.
+6. ~~Outcome field on `task_result` capsules.~~ Done, with rules that learn from it.
+   ~~Persisting topic opinions.~~ Done. Next: edge devices reporting outcomes.
 7. Relaying between peers and a queue for undelivered replies.
-8. Asserting tests for validator, interpreter, merge and scheduler.
+8. ~~Asserting tests for validator, interpreter, merge and scheduler.~~ Done.
 9. ~~Self-description capsules.~~ Done. Next: share them with peers after the hello, and decide
    whether passing test results count as outcomes.
 

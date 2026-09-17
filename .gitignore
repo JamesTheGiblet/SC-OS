@@ -7,3 +7,4 @@ store/*.json
 store/*.db
 store/*.db-wal
 store/*.db-shm
+peers.json

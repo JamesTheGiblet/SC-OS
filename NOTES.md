@@ -3,7 +3,63 @@
 Working notes: decisions made and why, open questions, what's next.
 [README.md](README.md) describes the system; [CHANGELOG.md](CHANGELOG.md) records what changed.
 
-Last updated 2026-09-16, after rules that learn from outcomes.
+Last updated 2026-09-17, after checking the target design against the code.
+
+## Thesis
+
+SC-OS is a seed, not a blueprint: a small invariant kernel plus one decay law. What it grows
+into is decided by the environment it lands in and the hardware it runs on. Two identical seeds
+in different places grow into different systems, and both are correct.
+
+## Target design
+
+Where SC-OS is heading, checked against the code on 2026-09-17. **Built** means code and tests
+exist; **partial** and **not built** say what's missing. Decisions below override this section
+where they disagree.
+
+1. **Kernel.** Knows capsules in, capsules out, validate, sign, store, dispatch; no hardware,
+   topology, roles or config. *Partial.* The core is `sc.schema.json`, `vocab.json`,
+   `validator.py`, `envelope.py`, `primitive.py`, `interpreter.py`, `scheduler.py`, `store.py`,
+   `handshake.py`, `weight.py` and `peer.py` (signing and identity), plus `hal/`. `hal/` is not
+   interface-only yet: `hal/transport.py` holds the file and socket implementations. The
+   scheduler doesn't sign; `Peer` does.
+2. **The law.** `W(t) = W0 · e^(−k·t)` with `k = k0 / (1 + evidence) / stakes`, one curve for
+   BlockForge, ChatterPet, HABITAT and SC-OS. *Built* (`weight.py`, `tests/test_weight.py`).
+3. **Epistemic axis.** `value` ∈ [−2, +2], +1 = unknown; `weight` ∈ [0, ∞). Weight decays, and
+   value's distance from +1 decays at the same rate, so unknown is the attractor. Stances: trusted
+   ≥ 1.5, leaning_trusted ≥ 1.2, unknown above 0.8, unclear above 0, wary above −1.5, distrusted
+   below. *Built.*
+4. **Sharing.** Skills (rules) are shared, and a node adopts them at unknown. Opinions travel only
+   as hints. Identity and store are never shared. *Partial:* nothing sends hints yet.
+5. **Boundary.** Hardware capsule is kernel-adjacent, sensor capsule agent-adjacent, setup
+   capsule operator-supplied. HAL is the only code that touches pins; the kernel never does.
+   *Partial:* transport is the only hardware in HAL; there is no sensor interface.
+6. **`__hardware__` capsule.** Detected at boot. `key=value` evidence strings for `cpu_class`,
+   `cpu_cores`, `cpu_mhz`, `ram_bytes`, `flash_bytes`, `storage_bytes`, `clock`, `transports`,
+   `crypto`. *Not built.* `boot/genesis.py` still lists fixed capabilities.
+7. **`__sensors__` capsule.** One claim per sensor; evidence carries `id`, `type`, `bus`, `pin`,
+   `unit`, `min`, `max`, `margin_low`, `margin_high`, `sample_ms`. Margins are operating
+   bounds, separate from physical min/max. *Not built.*
+8. **`__setup__` capsule.** Pinout, buses, margins and sample rates, supplied by the operator,
+   signed and stored at provision time; send a new one to reconfigure. *Not built.*
+9. **Read path.** Query `__sensors__`, parse evidence, read through HAL, compare against the
+   margins, record an outcome for `sensor:<id>`, emit a reading when it changes or on schedule.
+   *Not built.*
+10. **Bootstrap.** Key and genesis (signed, stored) → hardware → setup → sensors → discovery →
+    handshake → idle loop. *Partial:* genesis is built but not signed or stored; discovery
+    reads `peers.json`; the handshake and idle loop exist.
+11. **Edge.** ESP32 bots over ESP-NOW with the stripped wire format; autonomous unless a task,
+    threshold or stuck condition escalates; a gateway ESP32 bridges ESP-NOW ↔ UART to the
+    master, which is a node, not the brain; bots talk peer to peer. *Partial:* wire format and
+    upgrade/downgrade only.
+12. **Growth.** Children inherit skills, vocabulary and hints at unknown, never identity, opinions
+    or store; they detect their own hardware. Replicate for capacity, differentiate for
+    capability. Pressure → decision → spawn → boot → handshake → trial (mandatory) → graduation
+    → lineage. Death by starvation, merging or inheritance. Spawning costs weight, and
+    coordination cost bounds growth. *Not built* (a `lineage` table is in progress).
+13. **Build order.** Each step proves one layer: (1) `weight.py` with trajectory tests;
+    (2) store and scheduler; (3) laptop ↔ phone, two machines; (4) one ESP32 → gateway →
+    master; (5) one hand-spawned child; (6) then automate.
 
 ## Decisions
 
@@ -60,6 +116,17 @@ Each decision was made against the code as it stood; revisit only with a reason.
 - **Merge keeps the trigger** of the first parent, or the second's if the first is `none`.
   No strength ordering between triggers yet.
 - **Version choice is numeric.** Highest shared version wins by number, not string sort.
+- **Identity comes first at boot.** Key and genesis come before the hardware, setup and sensor
+  capsules, because those capsules must be signed by someone.
+- **Descriptive capsules use `key=value` evidence strings.** Hardware, sensor and setup capsules
+  put one fact per evidence string, so they stay readable and queryable without nested JSON.
+  Rules are the exception: a rule is a program, and its directive claim holds a JSON spec.
+- **Topic opinions persist** in the opinions table as `topic:<topic>`, like `rule:<id>`. Each
+  outcome decays the stored opinion to now, then observes. Losing a node's database still loses its
+  belief; that is local by design.
+- **Node files live under the project root,** not the working directory. A run script started
+  from another directory must find the same key, or the node would come back with a new identity
+  and its peers would reject it.
 
 ## Open questions
 
@@ -68,8 +135,8 @@ Each decision was made against the code as it stood; revisit only with a reason.
 - **Rule chaining.** Allow rules to fire on rule outputs with a depth limit?
 - **Edge outcomes.** The stripped ESP-NOW format has no outcome field. Add one, or have the
   gateway report outcomes for edge devices?
-- **Persisting topic opinions.** Rule trust is stored; the scheduler's topic opinions aren't.
-- **Merged sender.** `merge` builds `agent://alice+agent://bob`, which isn't addressable.
+- **Merged sender.** `merge` builds `agent://alice+agent://bob`, which isn't addressable and fails
+  schema validation, so no merged capsule is valid today.
   Proposal on the table: keep `sender` as the node doing the merge, both parents in
   `derived_from`, `method="merge"`.
 - **Beyond first contact.** TOFU trusts whoever says hello first. Options: pre-shared pins,
@@ -92,16 +159,18 @@ Each decision was made against the code as it stood; revisit only with a reason.
 
 ## Next
 
-1. **Two machines.** Same code, `--host`. Expect clock skew, firewalls, real disconnects and
-   path differences between Windows and Linux.
-2. **Persist topic opinions** in the opinions table, like rule trust.
-3. **Prune on a schedule** in `run_alice.py`.
-4. **Merged sender** decision.
-5. **Relaying and a reply queue**, which turn the star into a network.
-6. **Asserting tests** for validator, interpreter, merge and scheduler.
+1. **Two machines.** Scripts are ready (`--host 0.0.0.0`, `peers.json`, clock-offset warnings,
+   node files found from the project root) and a session over this machine's network address
+   passes. Still to do: an actual second machine, laptop ↔ phone. Expect firewalls, NAT, real
+   disconnects and Windows/Linux differences.
+2. **Make `hal/` an interface.** Protocols for transport, clock and a sensor bus; move
+   implementations out; a simulated sensor bus for the laptop.
+3. **Bootstrap:** signed, stored genesis, then `__hardware__`, `__setup__`, `__sensors__`.
+4. **Merged sender** decision (merge output currently fails validation).
+5. **Prune on a schedule** in `run_alice.py`.
+6. **Relaying and a reply queue**, which turn the star into a network.
 
 ## Housekeeping
 
-- `tests/test_weight.py` needs the project root on `PYTHONPATH`; the other tests set it themselves.
 - Old `store/*.log` ledgers are no longer read. Import them with
   `python -m store import <jsonl> <db>`, then delete them.

@@ -5,9 +5,9 @@ Each capsule is one row: the capsule as JSON (readable with sqlite3 and
 json_extract), its digest, when it was stored, the envelope signature if any,
 and indexed columns for lookups (sender, receiver, topic, intent, expiry).
 
-The same file also holds this node's local belief: an opinions table (value,
-weight, evidence count, status per key) and the set of task outcomes already
-counted. Neither is ever sent to peers.
+The same file also holds this node's local state, never sent to peers: an
+opinions table (value, weight, evidence count, status per key), the set of task
+outcomes already counted, and lineage (spawns this node took part in).
 
 A capsule stored unsigned and appended again with its envelope gains the
 signature in place; a signed record is never replaced. Pruning deletes rows
@@ -29,7 +29,7 @@ from typing import Iterator
 
 from envelope import digest
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_TTL_SECONDS = 3600
 
 _SCHEMA = """
@@ -63,6 +63,19 @@ CREATE TABLE IF NOT EXISTS opinions (
     last_tested    TEXT,
     created_at     TEXT NOT NULL,
     status         TEXT NOT NULL DEFAULT 'active'
+);
+
+-- Spawns this node took part in, as parent or child. Kept after capsules expire.
+CREATE TABLE IF NOT EXISTS lineage (
+    spawn_id   TEXT PRIMARY KEY,
+    parent     TEXT NOT NULL,
+    child      TEXT NOT NULL,
+    mode       TEXT NOT NULL,
+    role       TEXT NOT NULL,
+    status     TEXT NOT NULL,
+    detail     TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
 );
 
 -- Each task's outcome is counted once, however many task_results arrive for it.
@@ -265,6 +278,31 @@ class Store:
                 (task_id, int(success), datetime.now(timezone.utc).isoformat()),
             )
             return cur.rowcount == 1
+
+    # --- lineage ---
+
+    def record_lineage(self, spawn_id: str, *, parent: str, child: str, mode: str, role: str,
+                       status: str, detail: str = "") -> None:
+        """Insert or update a spawn record. created_at is kept from the first insert."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._lock:
+            self._db.execute(
+                """INSERT INTO lineage (spawn_id, parent, child, mode, role, status, detail, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(spawn_id) DO UPDATE SET status = excluded.status,
+                       detail = excluded.detail, updated_at = excluded.updated_at""",
+                (spawn_id, parent, child, mode, role, status, detail, now, now),
+            )
+
+    def get_lineage(self, spawn_id: str) -> dict | None:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM lineage WHERE spawn_id = ?", (spawn_id,)).fetchone()
+        return dict(row) if row else None
+
+    def lineage(self) -> list[dict]:
+        with self._lock:
+            rows = self._db.execute("SELECT * FROM lineage ORDER BY created_at").fetchall()
+        return [dict(row) for row in rows]
 
     def close(self) -> None:
         with self._lock:

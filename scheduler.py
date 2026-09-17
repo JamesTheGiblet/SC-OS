@@ -1,6 +1,9 @@
 """
 Kernel loop. Capsule in, capsules out.
 Routes by trigger, dispatches to agents, fires rules, records epistemic state.
+
+Topic opinions live in the store's opinions table as "topic:<topic>", so they
+survive restarts. Each is stored as of its last outcome and decayed on read.
 """
 
 from datetime import datetime, timezone
@@ -9,6 +12,8 @@ from primitive import Capsule, Intent, Trigger
 from interpreter import actionable
 from store import Store
 from weight import Opinion
+
+TOPIC_KEY = "topic:"
 
 if TYPE_CHECKING:
     from rules.engine import RuleEngine
@@ -25,7 +30,6 @@ class Scheduler:
         self.agents = agents
         self.store = store
         self.rules = rules
-        self.opinions: dict[str, Opinion] = {}   # topic -> opinion
         self.escalations: list[Capsule] = []
         self.task_results: list[Capsule] = []
         self.learned: list[str] = []              # what each counted outcome changed
@@ -72,9 +76,30 @@ class Scheduler:
         self, topic: str, success: bool, now: datetime | None = None
     ) -> Opinion:
         """Evidence = an observed outcome of acting on a topic, not receipt."""
-        opinion = self.opinions.setdefault(topic, Opinion())
+        now = now or datetime.now(timezone.utc)
+        opinion = self.opinion(topic, now)       # decay to now, then learn
         opinion.observe(success=success, now=now)
+        self.store.put_opinion(TOPIC_KEY + topic, value=opinion.value, weight=opinion.weight,
+                               evidence_count=opinion.evidence_count,
+                               last_tested=now.isoformat())
         return opinion
+
+    def opinion(self, topic: str, now: datetime | None = None) -> Opinion:
+        """This node's opinion of a topic, decayed to now. Unknown if never tested."""
+        row = self.store.get_opinion(TOPIC_KEY + topic)
+        if row is None:
+            return Opinion()
+        opinion = Opinion(value=row["value"], weight=row["weight"],
+                          evidence_count=row["evidence_count"],
+                          last_tested=datetime.fromisoformat(row["last_tested"])
+                              if row["last_tested"] else None)
+        opinion.tick(now=now)
+        return opinion
+
+    def opinions(self, now: datetime | None = None) -> dict[str, Opinion]:
+        """Every topic this node has an opinion on, decayed to now."""
+        return {key[len(TOPIC_KEY):]: self.opinion(key[len(TOPIC_KEY):], now)
+                for key in self.store.opinions(TOPIC_KEY)}
 
     def _escalate(self, c: Capsule) -> tuple[Capsule, ...]:
         # placeholder: real system routes to an LLM/human agent

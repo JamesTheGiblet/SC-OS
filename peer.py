@@ -60,6 +60,11 @@ def public_b64(pub: Ed25519PublicKey) -> str:
     return base64.b64encode(pub.public_bytes(Encoding.Raw, PublicFormat.Raw)).decode("ascii")
 
 
+def offered_key(cap: dict) -> str | None:
+    """The base64 Ed25519 public key a capsule carries in a public_key claim, if any."""
+    return _offered_key(cap)
+
+
 def _offered_key(cap: dict) -> str | None:
     for cl in cap.get("semantics", {}).get("claims", []):
         if cl.get("statement") == KEY_STATEMENT:
@@ -97,6 +102,21 @@ class Node:
         return dataclasses.replace(
             h, semantics=dataclasses.replace(h.semantics, claims=h.semantics.claims + (key_claim,))
         )
+
+    def pin(self, agent_id: str, key_b64: str) -> str:
+        """
+        Pin a key learned out of band (e.g. from a verified spawn bundle), so the
+        first hello must match it. Returns "new" or "known"; a different key for an
+        already pinned agent raises PeerRejected.
+        """
+        with self.lock:
+            known = self.pins.get(agent_id)
+            if known is not None and known != key_b64:
+                raise PeerRejected(f"key for {agent_id} differs from the pinned key")
+            if known is None:
+                self._save_pin(agent_id, key_b64)
+                return "new"
+            return "known"
 
     def _save_pin(self, agent_id: str, key_b64: str) -> None:
         self.pins[agent_id] = key_b64

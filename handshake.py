@@ -35,6 +35,17 @@ def make_hello(sender: str, receiver: str) -> Capsule:
     )
 
 
+def clock_offset(remote_hello: Capsule, received_at: datetime | None = None) -> float:
+    """
+    Seconds the remote clock is ahead of ours (negative: behind), estimated from
+    when its hello was created and when we received it. Includes network delay,
+    so it's only meaningful to within that delay. The validator rejects capsules
+    created more than CLOCK_SKEW_TOLERANCE_SECONDS in our future.
+    """
+    received_at = received_at or datetime.now(timezone.utc)
+    return (remote_hello.created - received_at).total_seconds()
+
+
 def _extract(c: Capsule, prefix: str) -> set[str]:
     for cl in c.semantics.claims:
         for e in cl.evidence:

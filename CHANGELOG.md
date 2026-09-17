@@ -10,6 +10,20 @@ across a process boundary.
 
 ### Added
 
+- **Target design written down.** `NOTES.md` has the thesis (a seed, not a blueprint) and the
+  target design (kernel, law, axis, sharing, hardware/sensor/setup capsules, read path, bootstrap,
+  edge, growth, build order), each marked built, partial or not built.
+- **Two-machine readiness.** `run_alice.py --host 0.0.0.0` prints the addresses other machines can
+  use (`hal.transport.local_addresses`). `run_bob.py` without `--host` connects to the first
+  `host:port` in `peers.json` (`boot.discovery.parse_peer`), and says what to check when it can't
+  connect instead of printing a traceback. Both sides warn when the peer's clock is more than 5 s
+  off (`handshake.clock_offset`). Keys, pins, ledgers and the default rule file are found next to
+  the scripts, not in the working directory. Verified: Alice on `0.0.0.0`, Bob and Carol started
+  from another directory, connecting over the machine's network address; both matched their pins,
+  and the rule and topic opinion learned from their outcomes.
+- **Asserting tests for the kernel and the law.** `tests/test_weight.py` (14, was a print script),
+  `tests/test_validator.py` (13), `tests/test_interpreter.py` (13, including merge),
+  `tests/test_scheduler.py` (14), `tests/test_network.py` (6). 126 tests in all.
 - **Rules as capsules that learn** (`rules/`). A rule is a signed capsule on topic `rule.<name>`
   whose directive claim holds a JSON spec: a `when` pattern (topic, from/to globs, intent, trigger,
   claim type, minimum confidence, predicate) and capsules to emit `then`, with placeholders.
@@ -84,6 +98,10 @@ across a process boundary.
 
 ### Changed
 
+- **Topic opinions persist.** `Scheduler.opinions` (an in-memory dict) became `Scheduler.opinion(topic)`
+  and `Scheduler.opinions()`, backed by the store's opinions table under `topic:<topic>`. Each outcome
+  decays the stored opinion to now, then observes; reads decay to now. Verified across processes:
+  the opinion from a run was read back by a new process.
 - **The scheduler learns only from verified outcomes.** `_handle_task_result` finds the task a
   `task_result` answers; if this node didn't send it to the reporting agent, it replies REFUSE
   `unknown_task`. Otherwise the outcome, counted once per task, updates the topic opinion and the
@@ -115,6 +133,12 @@ across a process boundary.
 
 ### Fixed
 
+- **Decay was counted twice when an opinion was ticked more than once.** `Opinion.tick` measured
+  elapsed time from `last_tested` every call but applied it to already-decayed weight, so ticking
+  at day 7 then day 30 gave weight 1.89 where one tick at day 30 gives 2.07. The old weight test
+  ticked exactly that way, so its printed trajectories were wrong. `Opinion` now records
+  `decayed_to`; stepwise and single ticks agree. Stored rule opinions were unaffected (each load
+  ticks once).
 - **A forged hello could poison a pin.** `peer.py` pinned the key offered in a hello before
   checking the hello's signature. A hello for `agent://bob` offering any key, signed by anyone,
   was rejected but left that key pinned on disk, locking the real Bob out. Pins are now written
@@ -160,16 +184,17 @@ across a process boundary.
 - Only ever run on one machine, in a star; no relaying, no queue for offline agents.
 - Trust on first use trusts whoever arrives first; no registry, no key rotation.
 - SQLite files are ~1.3× the old JSON Lines size, and nothing prunes on a schedule.
-- Validator, interpreter, merge and scheduler still have no asserting tests.
+- Two machines are ready but untested: every run so far was on one machine.
 - The self-description isn't shared with peers, expires after 7 days, and nothing reruns it.
 - A reported outcome is the worker's word; nothing checks it's true.
-- Topic opinions still live in memory; rules don't chain.
+- Rules don't chain.
 
 ### The ugly
 
 - `SocketTransport.recv` used directly still trusts the sender's self-declared label;
   only `Peer.recv` checks it.
-- `merge` builds an unaddressable sender (`agent://alice+agent://bob`).
+- `merge` builds an unaddressable sender (`agent://alice+agent://bob`), so no merged capsule
+  passes validation.
 - Agent replies and edge upgrades don't set `derived_from`; `Provenance.signature` is always null.
 - Self-description finds decisions, questions and limits by heading name; rename a heading and
   that capsule silently vanishes or reports zero items.

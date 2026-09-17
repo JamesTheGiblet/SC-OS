@@ -15,6 +15,11 @@ repeats hourly. Rules fire on incoming capsules; outcomes reported in
 task_result capsules teach the rule that asked for the task.
 
 --sessions N exits after N sessions have ended (0 = run until Ctrl+C).
+
+Two machines: run with --host 0.0.0.0 so other machines can connect; Alice
+prints the addresses to give them. Allow the port through the firewall.
+Keys, pins, the ledger and the default rule file are found next to this
+script, whatever directory it's started from.
 """
 
 import argparse
@@ -22,11 +27,12 @@ import socket
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 from agents.echo import EchoAgent
 from boot.genesis import genesis
-from hal.transport import SocketListener
-from handshake import negotiate
+from hal.transport import SocketListener, local_addresses
+from handshake import clock_offset, negotiate
 from interpreter import render
 from peer import Node, Peer, PeerRejected
 from rules.__main__ import load_rule_file
@@ -36,6 +42,8 @@ from store import Store
 from validator import CapsuleRejected
 
 ME = "agent://alice"
+ROOT = Path(__file__).resolve().parent
+CLOCK_WARN_SECONDS = 5
 MAINTAIN_EVERY_SECONDS = 3600
 _print_lock = threading.Lock()
 
@@ -82,6 +90,10 @@ class Server:
             agreed = negotiate(local_hello, hello)
             log(f"[{remote}] hello from {tag}, {pin}; agreed capsule_version="
                 f"{agreed['capsule_version']} vocab={agreed['vocab_version']}")
+            offset = clock_offset(hello)
+            if abs(offset) > CLOCK_WARN_SECONDS:
+                log(f"[{remote}] WARNING clock is {abs(offset):.1f} s {'ahead of' if offset > 0 else 'behind'} "
+                    f"ours; capsules more than 30 s in the future are rejected")
             peer.send(local_hello)
 
             while True:
@@ -115,18 +127,20 @@ class Server:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--host", default="127.0.0.1",
+                    help="address to listen on; 0.0.0.0 for other machines")
     ap.add_argument("--port", type=int, default=7707)
     ap.add_argument("--sessions", type=int, default=0,
                     help="exit after this many sessions end (0 = run until Ctrl+C)")
-    ap.add_argument("--rules", default="rules/builtin.json", help="rule file to issue at start")
+    ap.add_argument("--rules", default=str(ROOT / "rules" / "builtin.json"),
+                    help="rule file to issue at start")
     args = ap.parse_args()
     socket.setdefaulttimeout(30)
     started = datetime.now(timezone.utc).isoformat()
 
     log(f"genesis: {render(genesis('alice')).splitlines()[0]}")
-    store = Store("store/alice.db")
-    node = Node(ME, store)
+    store = Store(str(ROOT / "store" / "alice.db"))
+    node = Node(ME, store, key_dir=str(ROOT / "keys"), pins_path=str(ROOT / "store" / "alice.pins.json"))
     engine = RuleEngine(ME, store, node.key)
     for name, rule_id in load_rule_file(engine, args.rules):
         if rule_id is None:
@@ -139,9 +153,19 @@ def main() -> int:
             log(f"rule {r['name']}: value={r['value']:+.2f} weight={r['weight']:.2f} "
                 f"n={r['evidence_count']} fires={'yes' if r['fires'] else 'no'}")
     server = Server(node, Scheduler(agents={ME: EchoAgent()}, store=store, rules=engine))
-    listener = SocketListener(args.host, args.port)
+    try:
+        listener = SocketListener(args.host, args.port)
+    except OSError as e:
+        log(f"FAIL cannot listen on {args.host}:{args.port}: {e}")
+        return 1
     log(f"listening on {args.host}:{args.port}"
         + (f", stopping after {args.sessions} sessions" if args.sessions else ""))
+    if args.host in ("0.0.0.0", ""):
+        addrs = local_addresses()
+        log("other machines can connect to: "
+            + (", ".join(f"{a}:{args.port}" for a in addrs) if addrs else "(no non-loopback address found)"))
+    elif args.host.startswith("127.") or args.host == "localhost":
+        log("only this machine can connect; use --host 0.0.0.0 for others")
 
     threads: list[threading.Thread] = []
     last_maintained = time.monotonic()

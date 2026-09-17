@@ -44,6 +44,23 @@ class FileTransport:
 MAX_FRAME_BYTES = 1 << 20   # 1 MiB per message
 
 
+def local_addresses() -> list[str]:
+    """IPv4 addresses other machines might reach this one on (not loopback). Best effort."""
+    found: list[str] = []
+    try:
+        found += socket.gethostbyname_ex(socket.gethostname())[2]
+    except OSError:
+        pass
+    try:
+        # no packet is sent: connecting a UDP socket only picks the outbound interface
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))
+            found.append(s.getsockname()[0])
+    except OSError:
+        pass
+    return sorted({a for a in found if not a.startswith(("127.", "0."))})
+
+
 class SocketTransport:
     """
     Network. TCP. Phone dials out; laptop listens.
