@@ -2,8 +2,13 @@
 Kernel loop. Capsule in, capsules out.
 Routes by trigger, dispatches to agents, fires rules, records epistemic state.
 
-Topic opinions live in the store's opinions table as "topic:<topic>", so they
-survive restarts. Each is stored as of its last outcome and decayed on read.
+Opinions live in the store's opinions table under a namespaced key, so they
+survive restarts: "topic:<topic>" here, "rule:<id>" in the rule engine,
+"sensor:<device>/<id>" from the sensor observer. Each is stored as of its last
+outcome and decayed on read.
+
+Observers (e.g. sensing.SensorObserver) see every dispatched capsule and may
+record outcomes of checks they run themselves.
 """
 
 from datetime import datetime, timezone
@@ -24,12 +29,17 @@ class Agent(Protocol):
     def respond(self, c: Capsule, store: Store) -> tuple[Capsule, ...]: ...
 
 
+class Observer(Protocol):
+    def observe(self, capsule: dict, scheduler: "Scheduler") -> list[str]: ...
+
+
 class Scheduler:
     def __init__(self, agents: dict[str, Agent], store: Store,
-                 rules: "RuleEngine | None" = None):
+                 rules: "RuleEngine | None" = None, observers: tuple[Observer, ...] = ()):
         self.agents = agents
         self.store = store
         self.rules = rules
+        self.observers = tuple(observers)
         self.escalations: list[Capsule] = []
         self.task_results: list[Capsule] = []
         self.learned: list[str] = []              # what each counted outcome changed
@@ -40,12 +50,15 @@ class Scheduler:
         capsule that produces: the store is a full ledger.
         """
         from interpreter import to_wire
-        self.store.append(to_wire(c))
+        wire = to_wire(c)
+        self.store.append(wire)
 
-        # receipt is not evidence; see _handle_task_result()
+        # receipt is not evidence; see _handle_task_result() and the observers' own checks
         replies = self._route(c)
         if self.rules is not None:
             replies += self.rules.evaluate(c)
+        for observer in self.observers:
+            self.learned.extend(observer.observe(wire, self))
         for r in replies:
             self.store.append(to_wire(r))
         return replies
@@ -76,17 +89,25 @@ class Scheduler:
         self, topic: str, success: bool, now: datetime | None = None
     ) -> Opinion:
         """Evidence = an observed outcome of acting on a topic, not receipt."""
+        return self.record_observation(TOPIC_KEY + topic, success, now)
+
+    def record_observation(self, key: str, success: bool, now: datetime | None = None) -> Opinion:
+        """Record an observed outcome under a namespaced opinion key: decay to now, then learn."""
         now = now or datetime.now(timezone.utc)
-        opinion = self.opinion(topic, now)       # decay to now, then learn
+        opinion = self.opinion_of(key, now)
         opinion.observe(success=success, now=now)
-        self.store.put_opinion(TOPIC_KEY + topic, value=opinion.value, weight=opinion.weight,
+        self.store.put_opinion(key, value=opinion.value, weight=opinion.weight,
                                evidence_count=opinion.evidence_count,
                                last_tested=now.isoformat())
         return opinion
 
     def opinion(self, topic: str, now: datetime | None = None) -> Opinion:
         """This node's opinion of a topic, decayed to now. Unknown if never tested."""
-        row = self.store.get_opinion(TOPIC_KEY + topic)
+        return self.opinion_of(TOPIC_KEY + topic, now)
+
+    def opinion_of(self, key: str, now: datetime | None = None) -> Opinion:
+        """The opinion stored under a namespaced key, decayed to now. Unknown if never tested."""
+        row = self.store.get_opinion(key)
         if row is None:
             return Opinion()
         opinion = Opinion(value=row["value"], weight=row["weight"],

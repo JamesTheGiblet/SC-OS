@@ -12,7 +12,7 @@ before the REPL can be reached. This keeps both low.
 import argparse
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import serial
@@ -97,10 +97,12 @@ def main() -> int:
         for name in FILES:
             repl.put(HERE / name, name)
             print(f"copied {name}")
-        now = datetime.now()                    # the stick shows local time
+        now = datetime.now(timezone.utc)        # the clock keeps UTC; tz.txt holds the local offset
+        offset = int(datetime.now().astimezone().utcoffset().total_seconds() // 60)
         repl.exec("from sensors import Sensors; Sensors().set_clock(%d, %d, %d, %d, %d, %d, %d)"
                   % (now.year, now.month, now.day, now.isoweekday() % 7, now.hour, now.minute, now.second))
-        print(f"clock set to {now:%Y-%m-%d %H:%M:%S}")
+        repl.exec("f = open('tz.txt', 'w'); f.write('%d'); f.close()" % offset)
+        print(f"clock set to {now:%Y-%m-%d %H:%M:%S} UTC, local offset {offset:+d} min")
         repl.soft_reset()
         print("reset: main.py is running")
         return 0

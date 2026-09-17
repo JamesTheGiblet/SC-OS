@@ -97,3 +97,68 @@ def parse_evidence(claim: dict) -> dict:
         else:
             out[key] = value
     return out
+
+
+# --- readings ------------------------------------------------------------------
+
+READINGS_TOPIC = "__readings__"
+READINGS_TTL_SECONDS = 3600
+READINGS_SCHEMA = json.loads((Path(__file__).parent / "sc_readings.json").read_text())
+_RV = Draft202012Validator(READINGS_SCHEMA)
+AXES = ("x", "y", "z")
+
+
+def validate_readings(frame: dict) -> None:
+    errors = sorted(_RV.iter_errors(frame), key=lambda e: list(e.path))
+    if errors:
+        e = errors[0]
+        raise CapsuleRejected("edge_readings", f"{list(e.path)}: {e.message}")
+
+
+def readings_capsule(frame: dict, *, sender: str, receiver: str) -> Capsule:
+    """
+    A device's readings as one __readings__ capsule: a claim "sensor:<id>" per
+    reading, evidence "value=<v>" or "x=", "y=", "z=" for three-axis sensors.
+
+    Trigger heartbeat: readings also say the device is alive, and the master
+    doesn't answer heartbeats, so readings cost the device no replies.
+    """
+    validate_readings(frame)
+    claims = []
+    for sid, value in frame["readings"].items():
+        if isinstance(value, list):
+            evidence = tuple(f"{axis}={_value(float(v))}" for axis, v in zip(AXES, value))
+        else:
+            evidence = (f"value={_value(value)}",)
+        claims.append(Claim(statement=f"sensor:{sid}", type=ClaimType.OBSERVATION,
+                            confidence=1.0, evidence=evidence))
+    return Capsule(
+        id=f"urn:uuid:{uuid.uuid4()}",
+        created=datetime.now(timezone.utc),
+        sender=sender,
+        receiver=receiver,
+        intent=Intent.INFORM,
+        trigger=Trigger.HEARTBEAT,
+        semantics=Semantics(topic=READINGS_TOPIC, claims=tuple(claims)),
+        provenance=Provenance(method="observation"),
+        action_hints=ActionHints(priority="low", ttl_seconds=READINGS_TTL_SECONDS),
+    )
+
+
+def parse_readings(capsule: dict) -> dict:
+    """A __readings__ capsule (wire form) back to {id: float | (x, y, z) | str}."""
+    out = {}
+    for claim in capsule.get("semantics", {}).get("claims", []):
+        sid = claim.get("statement", "").removeprefix("sensor:")
+        ev = dict(item.partition("=")[::2] for item in claim.get("evidence", []))
+        if all(axis in ev for axis in AXES):
+            try:
+                out[sid] = tuple(float(ev[axis]) for axis in AXES)
+            except ValueError:
+                continue
+        elif "value" in ev:
+            try:
+                out[sid] = float(ev["value"])
+            except ValueError:
+                out[sid] = ev["value"]
+    return out

@@ -29,7 +29,7 @@ from machine import Pin
 import st7789 as tft
 from sctalk import Talk
 import sensors as sensor_info
-from sensors import Buzzer, Sensors
+from sensors import Buzzer, ReadingSender, Sensors, iso_utc
 
 HOLD = Pin(4, Pin.OUT, value=1)          # keep power on when running from the battery
 LED = Pin(19, Pin.OUT, value=0)
@@ -37,6 +37,20 @@ LED = Pin(19, Pin.OUT, value=0)
 TILT_REPORT_DEG = 40
 TILT_REARM_DEG = 20
 SAMPLE_MS = 200
+
+
+def tz_offset_minutes():
+    """Local time offset written by deploy.py; the clock itself keeps UTC."""
+    try:
+        with open("tz.txt") as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def local_hms(clock, offset_min):
+    seconds = (clock[3] * 3600 + clock[4] * 60 + clock[5] + offset_min * 60) % 86400
+    return seconds // 3600, seconds // 60 % 60, seconds % 60
 
 
 def note(text):
@@ -62,11 +76,11 @@ class Screen:
         self.rows = tft.Lines(self.d)
         self.between_rows = between_rows
 
-    def draw(self, name, clock, tilt, accel, gyro, temp, chip, volts, armed, link, task, last):
+    def draw(self, name, hms, tilt, accel, gyro, temp, chip, volts, armed, link, task, last):
         def put(*args, **kw):
             if self.rows.put(*args, **kw):
                 self.between_rows()
-        t = "%02d:%02d:%02d" % clock[3:6] if clock else "--:--:--"
+        t = "%02d:%02d:%02d" % hms if hms else "--:--:--"
         put("head", 0, 14, "%-21s%s" % (name, t), tft.WHITE, tft.BLUE)
         if tilt is None:
             put("tilt", 16, 20, "NO IMU", tft.RED, big=True)
@@ -100,6 +114,8 @@ def main():
     talk = Talk(name, boot_tag, print)
     sensors = Sensors()
     buzzer = Buzzer()
+    sender = ReadingSender()
+    tz = tz_offset_minutes()
     poll = select.poll()
     poll.register(sys.stdin, select.POLLIN)
     link = "link: waiting for alice"
@@ -179,8 +195,21 @@ def main():
                 elif not armed and tilt < TILT_REARM_DEG:
                     armed = True
             clock = sensors.clock() if sensors.rtc_ok else None
-            screen.draw(name, clock, tilt, accel, gyro, temp, sensors.chip_celsius(), sensors.battery_volts(),
+            chip, volts = sensors.chip_celsius(), sensors.battery_volts()
+            screen.draw(name, local_hms(clock, tz) if clock else None, tilt, accel, gyro, temp, chip, volts,
                         armed, link, talk.task["s"] if talk.task else None, last)
+
+            # readings for Alice's plausibility checks, when they change or once a minute
+            values = {"chip_temp": round(chip, 1), "battery": round(volts, 3)}
+            if accel:
+                values.update({"accel": [round(a, 3) for a in accel], "gyro": [round(g, 1) for g in gyro],
+                               "tilt": round(tilt, 1), "imu_temp": round(temp, 1)})
+            if clock:
+                values["clock"] = iso_utc(clock)
+            now_ms = time.ticks_ms()
+            if sender.due(values, now_ms):
+                talk.readings(values)
+                sender.mark(values, now_ms)
 
         # LED blinks while a task waits
         if talk.task is not None:

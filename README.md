@@ -210,6 +210,33 @@ device -> gateway  {"src":"m5-a1b2c3","cap":{"v":"1.0","id":"r2","to":"alice","i
   One claim per sensor, statement `sensor:<id>` (the key its opinion will use), one evidence string
   per field (`unit=V`, `margin_low=3.3`, …). Hardware the device has but can't read (`absent`)
   becomes known unknowns. `edge.sensors.parse_evidence` reads a claim back into numbers.
+- **Readings travel the same way.** `{"src", "readings": {"battery": 4.14, "accel": [x, y, z], …}}`
+  becomes a `__readings__` capsule (one claim `sensor:<id>` per reading, evidence `value=` or
+  `x=`/`y=`/`z=`), checked against `edge/sc_readings.json`. Its trigger is `heartbeat`, so Alice
+  stores it and doesn't reply: readings cost the device no incoming traffic.
+
+### Sensors earn trust from plausibility checks
+
+A sensor is trusted when its readings are physically plausible, not when they sit inside its
+margins: a working thermometer in a hot room is still right. Margins describe the world (crossing
+one is a threshold report, like tilt). Alice's `SensorObserver` (`sensing.py`) runs these checks
+herself on every `__readings__` capsule, so each result is her own observation and counts as an
+outcome; receiving a reading does not.
+
+| Check | Passes when | Silent when |
+| --- | --- | --- |
+| range | every value (each axis) is inside the physical min..max of the device's `__sensors__` description | no description |
+| accel | \|a\| is 0.9–1.1 g while the gyroscope reads under 5 °/s | the device is moving |
+| gyro | every axis is under 10 °/s while the accelerometer is steady across two readings | no previous reading, or accelerometer changed |
+| tilt | within 5° of the tilt computed from the accelerometer | no accelerometer reading |
+| imu_temp, chip_temp | change no faster than 0.5 °C/s | readings under 1 s apart |
+| battery | 3.0–4.5 V, no jump over 0.3 V between readings | — |
+| clock | within 120 s of the capsule's creation time | — |
+
+Outcomes go to `sensor:<device>/<id>` (e.g. `sensor:m5-96c048/battery`): the first verdict counts at
+once, then at most one outcome per sensor per minute, a failure if any check in that minute failed.
+Without the cap, readings every 25 s would drive every opinion to the maximum within hours.
+`run_alice.py` prints sensor trust at shutdown and prunes expired capsules hourly.
 
 ### An M5StickC PLUS2 as the edge device
 
@@ -234,7 +261,13 @@ a failure, without pausing the loop.
 At boot, and whenever the gateway asks, the stick describes its eight sensors (accel, gyro, tilt,
 imu_temp, chip_temp, battery, clock, buttons) and Alice stores the `__sensors__` capsule. Tilt's
 `margin_high` is the 40° report threshold. The margins come from `sensors.py` in the firmware until
-an operator's `__setup__` capsule supplies them. Readings themselves are shown only on the device.
+an operator's `__setup__` capsule supplies them.
+
+The stick also sends its readings (accel, gyro, tilt, both temperatures, battery, and its clock in
+UTC) when one moves past its deadband, at most every 5 s, and every 25 s regardless. The 25 s
+heartbeat keeps the gateway's session open under Alice's 30 s idle timeout. The clock is kept in
+UTC; `deploy.py` also writes the PC's UTC offset to `tz.txt` so the screen shows local time.
+
 Other hardware on the stick:
 
 | Part | State |
@@ -349,7 +382,8 @@ python tests/test_interpreter.py    # 13: exact wire round-trip, stable digests,
 python tests/test_scheduler.py      # 14: routing, ledger, replies, verified outcomes only, opinions survive restart
 python tests/test_network.py        # 6:  peers.json, clock offset, any working directory, session over a network address
 python tests/test_gateway.py        # 13: edge outcome fields, device outcome teaches Alice's rule, rejections, session drop, firmware protocol, sensor lists
-python -m pytest tests              # all 139
+python tests/test_sensing.py        # 13: each plausibility check, one outcome per window, scheduler observers, readings through the gateway
+python -m pytest tests              # all 152
 ```
 
 ## What a capsule looks like
@@ -434,7 +468,8 @@ Capsule ─to_wire─► dict ─sign─► envelope ──TCP──► Peer.rec
 | `boot/genesis.py` | A node's first capsule |
 | `boot/discovery.py` | `peers.json` (`host:port` entries), `parse_peer` |
 | `edge/upgrade.py`, `edge/sc_edge.json` | Stripped ESP-NOW wire form (≤16/32/120-char fields) and conversion |
-| `edge/sensors.py`, `edge/sc_sensors.json` | A device's sensor list, checked, into a `__sensors__` capsule |
+| `edge/sensors.py`, `edge/sc_sensors.json`, `edge/sc_readings.json` | A device's sensor list and readings, checked, into `__sensors__` and `__readings__` capsules |
+| `sensing.py` | Plausibility checks and `SensorObserver`: readings become outcomes for `sensor:<device>/<id>` |
 | `agents/` | `EchoAgent`, `RelayAgent` |
 | `hal/` | `FileTransport`, `SocketTransport`, `SocketListener` (many peers), `local_addresses`, clock, storage re-export |
 | `leighton_weight_readme.py` | The decay theory, draft |
@@ -519,8 +554,9 @@ your own evidence count and decay clock. Never store it as your opinion.
   their TTL get through.
 - **Storage grows until pruned.** SQLite makes lookups fast, not files small: at 20,000 capsules
   the database is about 25 MB, roughly 1.3× the old JSON Lines file, because of its indexes.
-  `Store.prune_expired()` deletes expired rows and gives the space back, but nothing calls it on
-  a schedule yet. Pins are still a JSON file per node, which two processes must not share.
+  `run_alice.py` calls `Store.prune_expired()` hourly, which deletes expired rows and gives the
+  space back; other nodes and the gateway don't prune. Pins are still a JSON file per node, which
+  two processes must not share.
 - **Signing lives outside the kernel.** `Peer` signs and stores signed records. `demo.py` and
   `Scheduler` used alone still store unsigned replies.
 - **An outcome is the worker's word.** A rule learns from what the agent asked to do the task
@@ -571,9 +607,14 @@ your own evidence count and decay clock. Never store it as your opinion.
 - **Small device buffers.** The stick's serial input buffer is small. The gateway paces frames and
   the firmware reads between screen rows (10 frames sent back to back with no gap all arrived), but
   a long enough burst could still overflow it; a lost task simply never gets an outcome.
-- **Alice knows the sensors, not their readings.** The stick's `__sensors__` capsule reaches Alice,
-  but readings are only displayed, so no `sensor:<id>` opinion exists yet. The margins in it are the
-  firmware's defaults, not an operator's (`__setup__` isn't built).
+- **Plausible isn't correct.** The checks catch impossible or inconsistent readings, not a sensor
+  that is consistently wrong: a thermometer reading 5 °C high, steadily, passes. The thresholds are
+  tuned for this stick, not derived from its datasheet, and nothing checks the buttons.
+- **Readings add up.** A still device sends a readings capsule every 25 s, about 3,500 a day, each
+  signed and stored. They expire after an hour and Alice prunes hourly.
+- **Descriptions expire.** A `__sensors__` capsule lives a day. Once pruned, range checks stop until
+  the device describes itself again (at boot, or when the gateway opens its port). Margins are
+  still firmware defaults, not an operator's (`__setup__` isn't built).
 - **Trust lives only in the node's database.** Delete `store/<name>.db` and every rule and topic
   opinion starts over at unknown; there's no backup or export of opinions.
 
@@ -584,7 +625,7 @@ your own evidence count and decay clock. Never store it as your opinion.
    [Two machines](#two-machines)). Next: networks with NAT, and reconnecting clients.
 3. Identity binding: ~~trust on first use~~ done; key registry or root of trust, key rotation.
 4. ~~Replay protection.~~ Done.
-5. ~~SQLite ledger.~~ Done. Next: prune on a schedule.
+5. ~~SQLite ledger.~~ Done. ~~Prune on a schedule.~~ Done in `run_alice.py`.
 6. ~~Outcome field on `task_result` capsules.~~ Done, with rules that learn from it.
    ~~Persisting topic opinions.~~ Done. ~~Edge devices reporting outcomes.~~ Done, through the
    gateway, verified on an M5StickC PLUS2 over USB serial. Next: ESP-NOW between two boards.

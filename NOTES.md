@@ -44,9 +44,10 @@ where they disagree.
    `__setup__` exists; nodes with full Python don't describe their sensors yet.
 8. **`__setup__` capsule.** Pinout, buses, margins and sample rates, supplied by the operator,
    signed and stored at provision time; send a new one to reconfigure. *Not built.*
-9. **Read path.** Query `__sensors__`, parse evidence, read through HAL, compare against the
-   margins, record an outcome for `sensor:<id>`, emit a reading when it changes or on schedule.
-   *Not built.*
+9. **Read path.** The device sends readings when they change or on schedule; the master checks
+   them for physical plausibility (range from `__sensors__`, physics cross-checks) and records an
+   outcome for `sensor:<device>/<id>`. *Built for edge devices* (`sensing.py`). Changed from the
+   first draft, which compared readings against margins: see Decisions.
 10. **Bootstrap.** Key and genesis (signed, stored) → hardware → setup → sensors → discovery →
     handshake → idle loop. *Partial:* genesis is built but not signed or stored; discovery
     reads `peers.json`; the handshake and idle loop exist.
@@ -120,6 +121,18 @@ Each decision was made against the code as it stood; revisit only with a reason.
 - **Version choice is numeric.** Highest shared version wins by number, not string sort.
 - **Identity comes first at boot.** Key and genesis come before the hardware, setup and sensor
   capsules, because those capsules must be signed by someone.
+- **A sensor earns trust from plausibility, not margins.** A reading outside its margins says the
+  world is out of bounds, not that the sensor is wrong; a working thermometer in a hot room would
+  lose trust under the first draft. Trust comes from physical checks: range, 1 g at rest, gyro near
+  zero while steady, tilt agreeing with the accelerometer, temperature and battery rates, clock.
+  Margins stay for threshold reports.
+- **The master runs sensor checks itself.** A check result is the master's own observation of the
+  readings, so it counts as an outcome; receiving a reading doesn't. Chosen over device self-reports
+  (the reporter's word again) and gateway checks (the gateway would need its own opinions).
+- **At most one sensor outcome per minute.** A steady stream of readings would otherwise push every
+  opinion to the maximum within hours and inflate evidence counts that slow decay.
+- **Readings are heartbeats.** They also say the device is alive, and the master doesn't answer
+  heartbeats, so a small device receives nothing for them.
 - **Edge devices describe their sensors; the gateway writes the capsule.** A stripped message
   carries one short claim and no evidence, so a device sends a compact sensor list and the gateway
   checks it and builds `__sensors__`. Chosen over one message per sensor (details squeezed into
@@ -158,7 +171,9 @@ Each decision was made against the code as it stood; revisit only with a reason.
 - **Signing in the kernel.** `Peer` signs; `Scheduler` alone stores unsigned replies. Should the
   scheduler own a key?
 - **Trigger strength.** Should merge prefer `stuck` over `threshold` over the rest?
-- **Pruning schedule.** Who calls `prune_expired`, and how often?
+- **Plausible but wrong.** Plausibility checks can't catch a sensor that is steadily off. A second
+  sensor of the same kind, or an operator's reference reading, would. Worth it?
+- **Pruning elsewhere.** Alice prunes hourly; the gateway's ledger and other nodes don't.
 - **Undelivered replies.** A reply to an agent with no open session is stored but dropped.
   Queue it until the agent reconnects?
 - **Sharing the self-description.** `self.*` capsules live only in `store/self.db`. Should a node
@@ -174,15 +189,13 @@ Each decision was made against the code as it stood; revisit only with a reason.
    accelerometer, gyroscope, IMU temperature, battery, link state and the waiting task. Still
    open: ESP-NOW between two boards (the gateway radio), and from step 3: NAT and reconnecting
    within one server process after a silent drop.
-2. **Sensor readings into SC-OS** (target design 9). The M5's `__sensors__` capsule reaches Alice;
-   its readings don't. Next: readings checked against the margins, outcomes recorded for
-   `sensor:<id>`, readings sent when they change.
+2. **`__setup__` capsule** (target design 8). Operator-supplied margins and pinouts replace the
+   firmware's defaults. Sensor readings and trust (target design 9) are done for edge devices.
 3. **Make `hal/` an interface.** Protocols for transport, clock and a sensor bus; move
    implementations out; a simulated sensor bus for the laptop.
 4. **Bootstrap:** signed, stored genesis, then `__hardware__`, `__setup__`, `__sensors__`.
 5. **Merged sender** decision (merge output currently fails validation).
-6. **Prune on a schedule** in `run_alice.py`.
-7. **Relaying and a reply queue**, which turn the star into a network.
+6. **Relaying and a reply queue**, which turn the star into a network.
 
 ## Housekeeping
 

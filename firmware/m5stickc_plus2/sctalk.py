@@ -59,6 +59,10 @@ class Talk:
             frame["absent"] = list(absent)
         self.send_line(json.dumps(frame))
 
+    def readings(self, values):
+        """Send current readings, {id: number | [x, y, z] | text}; the gateway builds __readings__."""
+        self.send_line(json.dumps({"src": self.name, "readings": values}))
+
     def complete(self, success, detail=""):
         """Report the outcome of the current task. Returns the message id, or None if no task."""
         if self.task is None:

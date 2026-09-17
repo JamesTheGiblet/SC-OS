@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://semantic-capsule.dev/sc_readings.json",
+  "title": "Edge sensor readings (device to gateway)",
+  "type": "object",
+  "required": ["src", "readings"],
+  "additionalProperties": false,
+  "properties": {
+    "src": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,15}$" },
+    "readings": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 32,
+      "propertyNames": { "pattern": "^[a-z0-9_]{1,24}$" },
+      "additionalProperties": {
+        "anyOf": [
+          { "type": "number" },
+          { "type": "string", "minLength": 1, "maxLength": 40 },
+          { "type": "array", "minItems": 3, "maxItems": 3, "items": { "type": "number" } }
+        ]
+      }
+    }
+  }
+}

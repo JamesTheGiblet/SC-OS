@@ -23,7 +23,7 @@ The kernel runs on full Python. Small devices speak a stripped format, and a gat
 
 ## What has been demonstrated
 
-One rule, `verify-high-confidence-risk`, has earned trust from four agents on real hardware: Bob, Carol, a phone and an M5StickC PLUS2. It reached the +2.0 maximum on successes and dropped on failures exactly as the model predicts. All 139 tests pass.
+One rule, `verify-high-confidence-risk`, has earned trust from four agents on real hardware: Bob, Carol, a phone and an M5StickC PLUS2. It reached the +2.0 maximum on successes and dropped on failures exactly as the model predicts. All 152 tests pass.
 
 | Area | Shown by |
 | --- | --- |
@@ -32,6 +32,7 @@ One rule, `verify-high-confidence-risk`, has earned trust from four agents on re
 | Learning rules | Rules are signed capsules; outcomes move their trust only when reported by the agent that did the task, counted once; trust survives restarts |
 | Edge device | M5StickC PLUS2 on MicroPython: tilt report → Alice's rule → task on its screen → button A/B → outcome counted |
 | Sensor descriptions | The stick describes 8 sensors; the gateway builds a signed `__sensors__` capsule with margins as evidence; Alice stores it |
+| Sensor trust | The stick sends readings; Alice checks them for physical plausibility herself and each sensor earns its own opinion (all seven readable sensors judged plausible on the device) |
 | The law | Asserting tests for decay, trajectories and sharing; they found a real bug (decay counted twice) that was fixed |
 | Self-description | SC-OS stores its own code, tests, decisions and limits as signed capsules |
 
@@ -45,20 +46,19 @@ SC-OS is a working v0.1 on one hotspot, not a deployable system. The main gaps:
 - **Identity is trust on first use.** Whoever says hello first gets pinned; there is no key registry or rotation.
 - **An outcome is the reporter's word.** Alice checks who reported and counts it once, but can't check it is true; on the stick it is a button press.
 - **The gateway holds every device's key.** Whoever controls the gateway can speak as its devices, and it forgets pending tasks when restarted.
-- **Sensors are described, not read.** Alice knows the stick's eight sensors, but no readings reach her, so no sensor has earned trust. Margins are firmware defaults, not an operator's.
+- **Plausible isn't correct.** Sensors earn trust from physical plausibility checks, which catch impossible readings but not a sensor that is steadily wrong. Margins are firmware defaults, not an operator's.
 - **Trust lives only in each node's database.** Lose the file and every opinion restarts at unknown.
 - **Known defects.** A merged capsule never passes validation, and the edge link is USB serial, not ESP-NOW radio.
 - **Not tested.** NAT, lossy links, more than a handful of peers, and any automated two-machine test.
 
 ## What's next
 
-Next is the read path: sensor readings checked against their margins, so each sensor earns its own trust the way the tilt rule did.
+Next is the operator's side: a `__setup__` capsule that supplies margins and pinouts instead of firmware defaults.
 
-1. **Read path.** The stick sends a reading when it changes; out-of-margin readings become outcomes for `sensor:<id>`.
-2. **`__setup__` capsule.** Operator-supplied margins and pinouts replace firmware defaults.
-3. **HAL as an interface.** Transport, clock and sensor bus as protocols, with a simulated sensor bus on the PC.
-4. **Bootstrap.** Signed genesis, then hardware, setup and sensor capsules at every boot.
-5. **ESP-NOW between two boards,** with a second ESP32 as the gateway radio.
-6. **One hand-spawned child node,** then automated growth.
+1. **`__setup__` capsule.** Operator-supplied margins and pinouts replace firmware defaults.
+2. **HAL as an interface.** Transport, clock and sensor bus as protocols, with a simulated sensor bus on the PC.
+3. **Bootstrap.** Signed genesis, then hardware, setup and sensor capsules at every boot.
+4. **ESP-NOW between two boards,** with a second ESP32 as the gateway radio.
+5. **One hand-spawned child node,** then automated growth.
 
-Smaller fixes queued: decide who a merged capsule is from, prune ledgers on a schedule, and persist the gateway's task table.
+Smaller fixes queued: decide who a merged capsule is from, and persist the gateway's task table.

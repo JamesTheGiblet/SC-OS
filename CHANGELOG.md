@@ -56,6 +56,18 @@ up across a process boundary.
   USB, clock correct; 10 frames sent back to back with no gap all arrived while the screen redrew.
   Found on the device and fixed: 40 MHz SPI on the screen's pins crashed the firmware in a boot
   loop (the limit on those pins is 26.7 MHz; it now uses 20 MHz).
+- **Sensors earn trust from plausibility checks** (target design 9, the read path). The M5 sends
+  readings (accel, gyro, tilt, imu and chip temperature, battery, UTC clock) when one moves past its
+  deadband, at most every 5 s and every 25 s regardless. The gateway builds a `__readings__` capsule
+  (`edge/sc_readings.json`, trigger `heartbeat`, so Alice doesn't reply). `sensing.py`: Alice's
+  `SensorObserver` checks each one herself (physical range from `__sensors__`, 1 g at rest, gyro near
+  zero while steady, tilt agrees with the accelerometer, temperature rate, battery range and jumps,
+  clock within 120 s) and records outcomes for `sensor:<device>/<id>`, at most one per sensor per
+  minute. `Scheduler` gains `observers`, `record_observation(key)` and `opinion_of(key)`; topic
+  outcomes use the same path. `run_alice.py` prints sensor trust at shutdown and now prunes expired
+  capsules hourly. The M5's clock is kept in UTC, with the local offset in `tz.txt` for the screen.
+  Tests: `tests/test_sensing.py` (13). Verified on the stick: Alice judged all seven readable sensors
+  plausible (accel 1.02 g at rest, gyro 1.6 dps, clock 1 s off) and formed their opinions. 152 tests.
 - **Edge devices describe their sensors** (target design 7). A device sends
   `{"src", "sensors": [...], "absent": [...]}`; the gateway checks it against `edge/sc_sensors.json`
   (all ten fields, unique ids, `min ≤ margin_low ≤ margin_high ≤ max`) and builds a `__sensors__`
@@ -244,7 +256,7 @@ up across a process boundary.
 
 - Still a star, now across two machines: no relaying, no queue for offline agents.
 - Trust on first use trusts whoever arrives first; no registry, no key rotation.
-- SQLite files are ~1.3× the old JSON Lines size, and nothing prunes on a schedule.
+- SQLite files are ~1.3× the old JSON Lines size; only Alice prunes, hourly.
 - Two machines checked by hand on one Wi-Fi hotspot only: no NAT, no lossy links, no automated test.
 - The self-description isn't shared with peers, expires after 7 days, and nothing reruns it.
 - A reported outcome is the worker's word; nothing checks it's true.
@@ -267,8 +279,10 @@ up across a process boundary.
   control of its devices.
 - An edge outcome is a button press; nothing checks the tilt was real. The M5 link is USB serial,
   not ESP-NOW, and the device's small input buffer can still lose a task in a burst.
-- Alice knows the M5's sensors but not their readings, so no sensor has an opinion yet; the
-  margins are firmware defaults, not an operator's `__setup__`.
+- Plausibility checks catch impossible readings, not a sensor that is steadily wrong; thresholds
+  are tuned for the M5, and margins are firmware defaults, not an operator's `__setup__`.
+- A still M5 adds about 3,500 readings capsules a day; its sensor description expires after a day,
+  and range checks stop until it describes itself again.
 - Trust exists only in the node's database; lose the file and every rule and topic opinion
   starts over.
 - Logged values are rounded but stances aren't: a rule printed `value=+1.50 stance=leaning_trusted`

@@ -104,7 +104,7 @@ class Sensors:
         return [n for n, p in self.buttons.items() if p.value() == 0]
 
     def clock(self):
-        """(year, month, day, hour, minute, second), or None if the RTC lost power."""
+        """(year, month, day, hour, minute, second) in UTC, or None if the RTC lost power."""
         r = self.i2c.readfrom_mem(RTC, 0x02, 7)
         if r[0] & 0x80:                                  # voltage-low flag: time not reliable
             return None
@@ -115,6 +115,48 @@ class Sensors:
         self.i2c.writeto_mem(RTC, 0x02, bytes([
             _to_bcd(second), _to_bcd(minute), _to_bcd(hour), _to_bcd(day),
             weekday, _to_bcd(month), _to_bcd(year % 100)]))
+
+
+class ReadingSender:
+    """
+    Decides when readings are worth sending: when one moves past its deadband, or
+    every HEARTBEAT_MS regardless, but never more often than MIN_INTERVAL_MS.
+    """
+
+    MIN_INTERVAL_MS = 5000
+    HEARTBEAT_MS = 25000                  # under the master's 30 s idle timeout, so the session stays open
+    DEADBAND = {"accel": 0.05, "gyro": 20, "tilt": 5, "imu_temp": 1.0, "chip_temp": 1.0, "battery": 0.05}
+
+    def __init__(self):
+        self.sent = None
+        self.sent_at = None
+
+    def _moved(self, values):
+        if self.sent is None:
+            return True
+        for sid, band in self.DEADBAND.items():
+            new, old = values.get(sid), self.sent.get(sid)
+            if new is None or old is None:
+                continue
+            pairs = zip(new, old) if isinstance(new, list) else ((new, old),)
+            if any(abs(a - b) >= band for a, b in pairs):
+                return True
+        return False
+
+    def due(self, values, now_ms):
+        if self.sent_at is None:
+            return True
+        age = time.ticks_diff(now_ms, self.sent_at)
+        if age < self.MIN_INTERVAL_MS:
+            return False
+        return age >= self.HEARTBEAT_MS or self._moved(values)
+
+    def mark(self, values, now_ms):
+        self.sent, self.sent_at = values, now_ms
+
+
+def iso_utc(clock):
+    return "%04d-%02d-%02dT%02d:%02d:%02dZ" % clock
 
 
 class Buzzer:

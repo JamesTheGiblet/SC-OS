@@ -6,6 +6,7 @@ Link frames are one JSON object per line:
 
     device -> gateway   {"src": "m5-a1b2c3", "cap": <stripped capsule>}
     device -> gateway   {"src": "m5-a1b2c3", "sensors": [...], "absent": [...]}   (see edge/sensors.py)
+    device -> gateway   {"src": "m5-a1b2c3", "readings": {"battery": 4.16, "accel": [x, y, z], ...}}
     gateway -> device   {"dst": "m5-a1b2c3", "cap": <stripped capsule>}
     gateway -> device   {"dst": "*", "cmd": "describe"}    (ask any device to send its sensor list)
 
@@ -38,7 +39,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
-from edge.sensors import sensors_capsule, validate_sensor_list
+from edge.sensors import readings_capsule, sensors_capsule, validate_readings, validate_sensor_list
 from edge.upgrade import from_edge_wire, to_edge_wire, validate_edge
 from handshake import TOPIC as HELLO_TOPIC, negotiate
 from peer import Node, Peer, PeerRejected
@@ -98,6 +99,8 @@ class EdgeGateway:
         """Upgrade one device frame and send it to the master. Raises CapsuleRejected."""
         if isinstance(frame, dict) and "sensors" in frame:
             return self._describe(frame)
+        if isinstance(frame, dict) and "readings" in frame:
+            return self._readings(frame)
         if not isinstance(frame, dict) or not isinstance(frame.get("cap"), dict):
             raise CapsuleRejected("edge_frame", "frame must be {\"src\": ..., \"cap\": {...}}")
         src = frame.get("src")
@@ -131,6 +134,15 @@ class EdgeGateway:
         validate_sensor_list(frame)
         device = self._device(frame["src"])
         c = sensors_capsule(frame, sender=device.agent, receiver=self.master)
+        with device.lock:
+            self._send(device, c)
+        return c
+
+    def _readings(self, frame: dict) -> Capsule:
+        """A device's readings become a __readings__ capsule (a heartbeat: the master doesn't reply)."""
+        validate_readings(frame)
+        device = self._device(frame["src"])
+        c = readings_capsule(frame, sender=device.agent, receiver=self.master)
         with device.lock:
             self._send(device, c)
         return c

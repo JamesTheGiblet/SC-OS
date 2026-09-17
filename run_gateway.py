@@ -10,6 +10,7 @@ session. Alice's replies and tasks are downgraded and written back as frames.
 
     device -> gateway   {"src": "m5-a1b2c3", "cap": {"v": "1.0", "id": "r1", "to": "alice", ...}}
     device -> gateway   {"src": "m5-a1b2c3", "sensors": [{"id": "imu_temp", ...}], "absent": [...]}
+    device -> gateway   {"src": "m5-a1b2c3", "readings": {"battery": 4.16, "accel": [0.0, 0.0, 1.0], ...}}
     gateway -> device   {"dst": "m5-a1b2c3", "cap": {..., "re": "r1"}}
 
 Lines that don't start with "{" (boot messages, a REPL banner) are ignored.
@@ -91,6 +92,7 @@ def main() -> int:
                 log(f"[{c.sender.removeprefix('agent://')}] {c.intent.value.upper()} {c.semantics.topic} "
                     f"trigger={c.trigger.value}" + (f" outcome={c.outcome.status}" if c.outcome else "")
                     + (f" ({len(c.semantics.claims)} sensors)" if c.semantics.topic == "__sensors__" else "")
+                    + (f" ({len(c.semantics.claims)} readings)" if c.semantics.topic == "__readings__" else "")
                     + " -> alice")
             except json.JSONDecodeError as e:
                 log(f"REJECT not JSON: {e}")

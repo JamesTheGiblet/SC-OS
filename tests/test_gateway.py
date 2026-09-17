@@ -28,6 +28,7 @@ from rules.engine import RuleEngine
 import run_alice
 from run_alice import Server
 from scheduler import Scheduler
+from sensing import SensorObserver
 from store import Store
 from validator import CapsuleRejected, validate
 
@@ -100,7 +101,8 @@ class AliceServer:
                          pins_path=str(self.tmp / "alice.pins.json"))
         self.engine = RuleEngine(ALICE, self.store, self.node.key)
         self.rule_id = self.engine.issue("verify-risk", VERIFY_RULE["when"], VERIFY_RULE["then"])
-        self.sched = Scheduler({ALICE: EchoAgent()}, self.store, rules=self.engine)
+        self.sched = Scheduler({ALICE: EchoAgent()}, self.store, rules=self.engine,
+                               observers=(SensorObserver(self.store),))
         self.server = Server(self.node, self.sched)
         self.listener = SocketListener("127.0.0.1", 0, poll_seconds=0.2)
         self.port = self.listener.sock.getsockname()[1]

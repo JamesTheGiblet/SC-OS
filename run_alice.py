@@ -38,6 +38,7 @@ from peer import Node, Peer, PeerRejected
 from rules.__main__ import load_rule_file
 from rules.engine import RuleEngine
 from scheduler import Scheduler
+from sensing import KEY_PREFIX as SENSOR_KEY, SensorObserver
 from store import Store
 from validator import CapsuleRejected
 
@@ -152,7 +153,9 @@ def main() -> int:
         if r["status"] == "active":
             log(f"rule {r['name']}: value={r['value']:+.2f} weight={r['weight']:.2f} "
                 f"n={r['evidence_count']} fires={'yes' if r['fires'] else 'no'}")
-    server = Server(node, Scheduler(agents={ME: EchoAgent()}, store=store, rules=engine))
+    sched = Scheduler(agents={ME: EchoAgent()}, store=store, rules=engine,
+                      observers=(SensorObserver(store),))
+    server = Server(node, sched)
     try:
         listener = SocketListener(args.host, args.port)
     except OSError as e:
@@ -174,9 +177,12 @@ def main() -> int:
             if time.monotonic() - last_maintained > MAINTAIN_EVERY_SECONDS:
                 with node.lock:
                     report = engine.maintain()
+                    pruned = store.prune_expired()   # expired capsules can't be replayed, so dropping them is safe
                 last_maintained = time.monotonic()
                 if report["refreshed"] or report["forgotten"]:
                     log(f"rule maintenance: refreshed {report['refreshed']}, forgotten {report['forgotten']}")
+                if pruned:
+                    log(f"pruned {pruned} expired capsules from the ledger")
             with server.ended_cond:
                 if args.sessions and server.ended >= args.sessions:
                     break
@@ -206,6 +212,12 @@ def main() -> int:
             f"n={r['evidence_count']} stance={r['stance']}")
     for p in engine.problems:
         log(f"  rule problem: {p}")
+    sensors = store.opinions(SENSOR_KEY)
+    if sensors:
+        log("sensor trust now (from plausibility checks):")
+        for key in sensors:
+            op = sched.opinion_of(key)
+            log(f"  {key:34} value={op.value:+.2f} weight={op.weight:.2f} n={op.evidence_count} stance={op.stance}")
     return 0
 
 
