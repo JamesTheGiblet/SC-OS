@@ -215,6 +215,34 @@ device -> gateway  {"src":"m5-a1b2c3","cap":{"v":"1.0","id":"r2","to":"alice","i
   `x=`/`y=`/`z=`), checked against `edge/sc_readings.json`. Its trigger is `heartbeat`, so Alice
   stores it and doesn't reply: readings cost the device no incoming traffic.
 
+### Operator setup: margins without re-flashing
+
+You set a device's margins and sample rates in a small file; SC-OS delivers it as a signed task and
+the device confirms by describing itself with the new values.
+
+```sh
+python provision.py issue setup/m5-96c048.json      # check, sign and store as Alice
+python provision.py show                            # each device's latest setup: applied or waiting
+```
+
+```json
+{"device": "m5-96c048",
+ "sensors": {"tilt": {"margin_high": 30}, "battery": {"margin_low": 3.5, "margin_high": 4.3}}}
+```
+
+1. `issue` checks the file against the device's latest `__sensors__` description (known sensor ids,
+   `min ≤ margin_low ≤ margin_high ≤ max`, `sample_ms` ≥ 20) and stores a signed `__setup__`
+   capsule: a task with one directive claim `setup:<id>` per sensor. A newer setup replaces the older.
+2. Alice's `SetupKeeper` compares that setup with the device's description whenever its readings or
+   description arrive. While they differ it sends a copy (method `relay`, `derived_from` the issued
+   setup), at most once a minute. The gateway turns it into `{"dst", "setup": {"re", "sensors"}}`.
+3. The device applies all of it or none, saves it to `setup.json` so it survives reboots, reports a
+   `task_result` (`__setup__`, success or failure with the reason), and describes itself again.
+   The matching description stops the resending; `provision.py show` then says `applied`.
+
+On the M5, tilt's `margin_high` is the report threshold (re-armed below half of it). Only margins and
+`sample_ms` can be set: the stick's sensors are wired to fixed pins.
+
 ### Sensors earn trust from plausibility checks
 
 A sensor is trusted when its readings are physically plausible, not when they sit inside its
@@ -241,10 +269,10 @@ Without the cap, readings every 25 s would drive every opinion to the maximum wi
 ### An M5StickC PLUS2 as the edge device
 
 `firmware/m5stickc_plus2/` runs on the stick under MicroPython, over USB serial to the gateway.
-Tilt it past 40°: it reports `tilt_risk` as a threshold, Alice's verify rule sends a task back,
+Tilt it past its tilt margin (40° by default): it reports `tilt_risk` as a threshold, Alice's verify rule sends a task back,
 and the red LED blinks. Press **A** (front) if the tilt was real, **B** (side) if not; the outcome
 goes to Alice. It asks one question at a time: no new report while a task waits. Stand it under
-20° to re-arm. Button C (power, short press) turns the backlight on and off.
+half the margin to re-arm. Button C (power, short press) turns the backlight on and off.
 
 The screen (landscape, 240×135) shows:
 
@@ -260,8 +288,8 @@ a failure, without pausing the loop.
 
 At boot, and whenever the gateway asks, the stick describes its eight sensors (accel, gyro, tilt,
 imu_temp, chip_temp, battery, clock, buttons) and Alice stores the `__sensors__` capsule. Tilt's
-`margin_high` is the 40° report threshold. The margins come from `sensors.py` in the firmware until
-an operator's `__setup__` capsule supplies them.
+`margin_high` is the report threshold. Margins default to `sensors.py` in the firmware; an operator
+setup (`provision.py`) overrides them and the stick keeps the overrides in `setup.json`.
 
 The stick also sends its readings (accel, gyro, tilt, both temperatures, battery, and its clock in
 UTC) when one moves past its deadband, at most every 5 s, and every 25 s regardless. The 25 s
@@ -383,7 +411,8 @@ python tests/test_scheduler.py      # 14: routing, ledger, replies, verified out
 python tests/test_network.py        # 6:  peers.json, clock offset, any working directory, session over a network address
 python tests/test_gateway.py        # 13: edge outcome fields, device outcome teaches Alice's rule, rejections, session drop, firmware protocol, sensor lists
 python tests/test_sensing.py        # 13: each plausibility check, one outcome per window, scheduler observers, readings through the gateway
-python -m pytest tests              # all 152
+python tests/test_provision.py      # 9:  setup checks, issuing, resending until applied, firmware applying, the whole loop
+python -m pytest tests              # all 161
 ```
 
 ## What a capsule looks like
@@ -470,6 +499,7 @@ Capsule ─to_wire─► dict ─sign─► envelope ──TCP──► Peer.rec
 | `edge/upgrade.py`, `edge/sc_edge.json` | Stripped ESP-NOW wire form (≤16/32/120-char fields) and conversion |
 | `edge/sensors.py`, `edge/sc_sensors.json`, `edge/sc_readings.json` | A device's sensor list and readings, checked, into `__sensors__` and `__readings__` capsules |
 | `sensing.py` | Plausibility checks and `SensorObserver`: readings become outcomes for `sensor:<device>/<id>` |
+| `provision.py`, `setup/` | Operator setups: `issue` / `show`, and `SetupKeeper`, which delivers a setup until the device applies it |
 | `agents/` | `EchoAgent`, `RelayAgent` |
 | `hal/` | `FileTransport`, `SocketTransport`, `SocketListener` (many peers), `local_addresses`, clock, storage re-export |
 | `leighton_weight_readme.py` | The decay theory, draft |
@@ -613,8 +643,12 @@ your own evidence count and decay clock. Never store it as your opinion.
 - **Readings add up.** A still device sends a readings capsule every 25 s, about 3,500 a day, each
   signed and stored. They expire after an hour and Alice prunes hourly.
 - **Descriptions expire.** A `__sensors__` capsule lives a day. Once pruned, range checks stop until
-  the device describes itself again (at boot, or when the gateway opens its port). Margins are
-  still firmware defaults, not an operator's (`__setup__` isn't built).
+  the device describes itself again (at boot, or when the gateway opens its port).
+- **A setup is signed by the node, not by you.** `provision.py` signs as Alice, as the rules CLI does;
+  there is no separate operator identity, so anyone who can run it on Alice's machine can set margins.
+- **Setups add up on the device.** The stick merges each setup into `setup.json`. A newer setup that
+  leaves out a field doesn't reset it, and nothing resets to firmware defaults except deleting that
+  file. A setup reaches a device only while it is reporting, and expires after 7 days.
 - **Trust lives only in the node's database.** Delete `store/<name>.db` and every rule and topic
   opinion starts over at unknown; there's no backup or export of opinions.
 

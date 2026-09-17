@@ -30,6 +30,8 @@ class Agent(Protocol):
 
 
 class Observer(Protocol):
+    """Sees every dispatched capsule. observe() returns what it learned; an optional
+    respond() returns capsules to send, like an agent's replies."""
     def observe(self, capsule: dict, scheduler: "Scheduler") -> list[str]: ...
 
 
@@ -59,6 +61,8 @@ class Scheduler:
             replies += self.rules.evaluate(c)
         for observer in self.observers:
             self.learned.extend(observer.observe(wire, self))
+            if hasattr(observer, "respond"):
+                replies += observer.respond(wire, self)
         for r in replies:
             self.store.append(to_wire(r))
         return replies

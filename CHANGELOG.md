@@ -56,6 +56,18 @@ up across a process boundary.
   USB, clock correct; 10 frames sent back to back with no gap all arrived while the screen redrew.
   Found on the device and fixed: 40 MHz SPI on the screen's pins crashed the firmware in a boot
   loop (the limit on those pins is 26.7 MHz; it now uses 20 MHz).
+- **Operator setup** (target design 8). `provision.py issue <file>` checks a setup (margins and
+  `sample_ms` per sensor) against the device's `__sensors__` description and stores it as a signed
+  `__setup__` task from Alice; `provision.py show` lists each device's latest setup as applied or
+  waiting. `SetupKeeper`, a new observer on Alice, sends a relay copy whenever the device's readings or
+  description show the setup isn't applied, at most once a minute. `Scheduler` observers may now
+  return replies (`respond`). The gateway turns a `__setup__` task into a setup frame; the M5 applies
+  all of it or none (`sctalk.apply_setup`), saves `setup.json`, reports a `task_result`, and describes
+  itself again. The M5's tilt threshold is now tilt's `margin_high`. Found by the new test and fixed
+  before release: the gateway turned Alice's ACKs on topic `__setup__` into setup frames too.
+  Tests: `tests/test_provision.py` (9). Verified on the stick: a setup (tilt 30°, battery 3.5–4.3 V)
+  issued while it ran was delivered on its next reading, applied, confirmed by its description, and
+  still in force after a reboot ("tilt past 30 degrees to report"). 161 tests.
 - **Sensors earn trust from plausibility checks** (target design 9, the read path). The M5 sends
   readings (accel, gyro, tilt, imu and chip temperature, battery, UTC clock) when one moves past its
   deadband, at most every 5 s and every 25 s regardless. The gateway builds a `__readings__` capsule
@@ -280,7 +292,9 @@ up across a process boundary.
 - An edge outcome is a button press; nothing checks the tilt was real. The M5 link is USB serial,
   not ESP-NOW, and the device's small input buffer can still lose a task in a burst.
 - Plausibility checks catch impossible readings, not a sensor that is steadily wrong; thresholds
-  are tuned for the M5, and margins are firmware defaults, not an operator's `__setup__`.
+  are tuned for the M5.
+- Setups are signed by the node's key (no separate operator identity), accumulate on the device,
+  and reach it only while it reports.
 - A still M5 adds about 3,500 readings capsules a day; its sensor description expires after a day,
   and range checks stop until it describes itself again.
 - Trust exists only in the node's database; lose the file and every rule and topic opinion

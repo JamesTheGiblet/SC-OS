@@ -1,11 +1,11 @@
 """
 M5StickC PLUS2 as an SC-OS edge device (MicroPython), over USB serial to run_gateway.py.
 
-Tilt the stick past 40 degrees: it reports "tilt_risk" as a threshold (not while a
-task waits). Alice's verify rule sends a task back; it shows on the screen and the
+Tilt the stick past its tilt margin (40 degrees unless an operator setup changes it):
+it reports "tilt_risk" as a threshold (not while a task waits). Alice's verify rule sends a task back; it shows on the screen and the
 LED blinks. Press A (the big front button) if the report was real, B (the side
 button) if it wasn't. The outcome goes back to Alice and moves the rule's trust.
-Tilt back under 20 degrees to re-arm. Button C (power, short press) turns the
+Tilt back under half the margin to re-arm. Button C (power, short press) turns the
 backlight on and off.
 
 The screen shows the clock, tilt, accelerometer, gyroscope, IMU and chip
@@ -27,15 +27,37 @@ import machine
 from machine import Pin
 
 import st7789 as tft
-from sctalk import Talk
+import json
+
+from sctalk import Talk, apply_setup
 import sensors as sensor_info
 from sensors import Buzzer, ReadingSender, Sensors, iso_utc
 
 HOLD = Pin(4, Pin.OUT, value=1)          # keep power on when running from the battery
 LED = Pin(19, Pin.OUT, value=0)
 
-TILT_REPORT_DEG = 40
-TILT_REARM_DEG = 20
+SETUP_FILE = "setup.json"            # operator overrides, kept across reboots
+
+
+def load_overrides():
+    try:
+        with open(SETUP_FILE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_overrides(overrides):
+    with open(SETUP_FILE, "w") as f:
+        json.dump(overrides, f)
+
+
+def tilt_thresholds(description):
+    """Report past the tilt sensor's margin_high; re-arm below half of it."""
+    for d in description:
+        if d["id"] == "tilt":
+            return d["margin_high"], d["margin_high"] / 2
+    return 40, 20
 SAMPLE_MS = 200
 
 
@@ -76,7 +98,7 @@ class Screen:
         self.rows = tft.Lines(self.d)
         self.between_rows = between_rows
 
-    def draw(self, name, hms, tilt, accel, gyro, temp, chip, volts, armed, link, task, last):
+    def draw(self, name, hms, tilt, accel, gyro, temp, chip, volts, armed, link, task, last, report_deg):
         def put(*args, **kw):
             if self.rows.put(*args, **kw):
                 self.between_rows()
@@ -85,7 +107,7 @@ class Screen:
         if tilt is None:
             put("tilt", 16, 20, "NO IMU", tft.RED, big=True)
         else:
-            colour = tft.YELLOW if tilt > TILT_REPORT_DEG else (tft.GREEN if armed else tft.GREY)
+            colour = tft.YELLOW if tilt > report_deg else (tft.GREEN if armed else tft.GREY)
             put("tilt", 16, 20, "TILT %3d" % tilt, colour, big=True)
         if accel:
             put("acc", 38, 11, "acc %+5.2f %+5.2f %+5.2f g" % accel, tft.CYAN)
@@ -101,7 +123,7 @@ class Screen:
             put("task3", 108, 11, "A = yes          B = no", tft.BLACK, tft.YELLOW)
         else:
             put("task1", 86, 11, "", tft.BLACK)
-            put("task2", 97, 11, "tilt past %d deg to report" % TILT_REPORT_DEG, tft.GREY)
+            put("task2", 97, 11, "tilt past %d deg to report" % report_deg, tft.GREY)
             put("task3", 108, 11, "", tft.BLACK)
         colour = tft.GREEN if last.startswith("sent success") else (
             tft.RED if last.startswith("sent failure") else tft.GREY)
@@ -116,13 +138,19 @@ def main():
     buzzer = Buzzer()
     sender = ReadingSender()
     tz = tz_offset_minutes()
+    overrides = load_overrides()
+    description, error = apply_setup(list(sensor_info.DESCRIPTION), overrides)
+    if error:                               # a saved setup that no longer fits: back to defaults
+        note("saved setup ignored: " + error)
+        description, overrides = list(sensor_info.DESCRIPTION), {}
+    report_deg, rearm_deg = tilt_thresholds(description)
     poll = select.poll()
     poll.register(sys.stdin, select.POLLIN)
     link = "link: waiting for alice"
 
     def read_link():
-        """Handle every frame waiting on the link: tasks and acks from the gateway."""
-        nonlocal link
+        """Handle every frame waiting on the link: tasks, setups and acks from the gateway."""
+        nonlocal link, description, overrides, report_deg, rearm_deg
         while poll.poll(0):
             line = sys.stdin.readline()
             what = talk.receive_line(line)
@@ -139,15 +167,34 @@ def main():
                 link = "alice: refused"
                 note("refused by the master")
             elif what == "describe":
-                talk.describe(sensor_info.DESCRIPTION, sensor_info.ABSENT)
-                note("sent sensor list (%d sensors)" % len(sensor_info.DESCRIPTION))
+                talk.describe(description, sensor_info.ABSENT)
+                note("sent sensor list (%d sensors)" % len(description))
+            elif what == "setup":
+                setup, talk.setup = talk.setup, None
+                new, error = apply_setup(description, setup["sensors"])
+                if error:
+                    talk.result(setup["re"], "__setup__", "apply setup", False, error)
+                    link = "setup refused: " + error
+                    note("setup refused: " + error)
+                else:
+                    description = new
+                    for sid, fields in setup["sensors"].items():
+                        overrides.setdefault(sid, {}).update(fields)
+                    save_overrides(overrides)
+                    report_deg, rearm_deg = tilt_thresholds(description)
+                    talk.result(setup["re"], "__setup__", "apply setup", True,
+                                "applied " + ", ".join(sorted(setup["sensors"])))
+                    talk.describe(description, sensor_info.ABSENT)
+                    link = "setup applied"
+                    buzzer.play(Buzzer.SUCCESS)
+                    note("setup applied: " + json.dumps(setup["sensors"]))
 
     screen = Screen(read_link)          # reads the link between row pushes, too
     if not sensors.imu_ok:
         note("IMU not found; buttons still report")
-    note("%s ready: tilt past %d degrees to report" % (name, TILT_REPORT_DEG))
+    note("%s ready: tilt past %d degrees to report" % (name, report_deg))
     talk.report("status", "%s online" % name, 1.0, trigger="announce")
-    talk.describe(sensor_info.DESCRIPTION, sensor_info.ABSENT)
+    talk.describe(description, sensor_info.ABSENT)
 
     armed = True
     backlight = True
@@ -188,16 +235,16 @@ def main():
             accel, gyro, temp, tilt = reading
             # one question at a time: a new report would replace the task still waiting
             if tilt is not None:
-                if armed and tilt > TILT_REPORT_DEG and talk.task is None:
+                if armed and tilt > report_deg and talk.task is None:
                     talk.report("tilt_risk", "tilted %d degrees" % tilt, 0.9)
                     armed = False
                     link = "sent tilt_risk %d deg" % tilt
-                elif not armed and tilt < TILT_REARM_DEG:
+                elif not armed and tilt < rearm_deg:
                     armed = True
             clock = sensors.clock() if sensors.rtc_ok else None
             chip, volts = sensors.chip_celsius(), sensors.battery_volts()
             screen.draw(name, local_hms(clock, tz) if clock else None, tilt, accel, gyro, temp, chip, volts,
-                        armed, link, talk.task["s"] if talk.task else None, last)
+                        armed, link, talk.task["s"] if talk.task else None, last, report_deg)
 
             # readings for Alice's plausibility checks, when they change or once a minute
             values = {"chip_temp": round(chip, 1), "battery": round(volts, 3)}

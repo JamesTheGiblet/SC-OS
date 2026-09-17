@@ -1,0 +1,7 @@
+{
+  "device": "m5-96c048",
+  "sensors": {
+    "tilt": {"margin_high": 30},
+    "battery": {"margin_low": 3.5, "margin_high": 4.3}
+  }
+}

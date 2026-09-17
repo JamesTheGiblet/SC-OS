@@ -43,7 +43,9 @@ where they disagree.
    list and the gateway builds the capsule (`edge/sensors.py`). Margins come from firmware until
    `__setup__` exists; nodes with full Python don't describe their sensors yet.
 8. **`__setup__` capsule.** Pinout, buses, margins and sample rates, supplied by the operator,
-   signed and stored at provision time; send a new one to reconfigure. *Not built.*
+   signed and stored at provision time; send a new one to reconfigure. *Built for edge devices,
+   margins and sample rates only* (`provision.py`): pins on the M5 are wired. Signed by the node,
+   not a separate operator key.
 9. **Read path.** The device sends readings when they change or on schedule; the master checks
    them for physical plausibility (range from `__sensors__`, physics cross-checks) and records an
    outcome for `sensor:<device>/<id>`. *Built for edge devices* (`sensing.py`). Changed from the
@@ -121,6 +123,13 @@ Each decision was made against the code as it stood; revisit only with a reason.
 - **Version choice is numeric.** Highest shared version wins by number, not string sort.
 - **Identity comes first at boot.** Key and genesis come before the hardware, setup and sensor
   capsules, because those capsules must be signed by someone.
+- **A setup is a task, confirmed by the device's description.** The device reports a `task_result`
+  for applying it, but what stops the resending is its next `__sensors__` capsule showing the new
+  margins: the master checks the effect, not just the report.
+- **A setup is all or nothing on the device.** A setup with one bad field changes nothing and comes
+  back as a failure with the reason, so a device is never left half configured.
+- **The node signs setups for its operator,** as it signs rules. A separate operator identity waits
+  for a key registry.
 - **A sensor earns trust from plausibility, not margins.** A reading outside its margins says the
   world is out of bounds, not that the sensor is wrong; a working thermometer in a hot room would
   lose trust under the first draft. Trust comes from physical checks: range, 1 g at rest, gyro near
@@ -189,13 +198,11 @@ Each decision was made against the code as it stood; revisit only with a reason.
    accelerometer, gyroscope, IMU temperature, battery, link state and the waiting task. Still
    open: ESP-NOW between two boards (the gateway radio), and from step 3: NAT and reconnecting
    within one server process after a silent drop.
-2. **`__setup__` capsule** (target design 8). Operator-supplied margins and pinouts replace the
-   firmware's defaults. Sensor readings and trust (target design 9) are done for edge devices.
-3. **Make `hal/` an interface.** Protocols for transport, clock and a sensor bus; move
+2. **Make `hal/` an interface.** Protocols for transport, clock and a sensor bus; move
    implementations out; a simulated sensor bus for the laptop.
-4. **Bootstrap:** signed, stored genesis, then `__hardware__`, `__setup__`, `__sensors__`.
-5. **Merged sender** decision (merge output currently fails validation).
-6. **Relaying and a reply queue**, which turn the star into a network.
+3. **Bootstrap:** signed, stored genesis, then `__hardware__`, `__setup__`, `__sensors__`.
+4. **Merged sender** decision (merge output currently fails validation).
+5. **Relaying and a reply queue**, which turn the star into a network.
 
 ## Housekeeping
 

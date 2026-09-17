@@ -9,6 +9,7 @@ Link frames are one JSON object per line:
     device -> gateway   {"src": "m5-a1b2c3", "readings": {"battery": 4.16, "accel": [x, y, z], ...}}
     gateway -> device   {"dst": "m5-a1b2c3", "cap": <stripped capsule>}
     gateway -> device   {"dst": "*", "cmd": "describe"}    (ask any device to send its sensor list)
+    gateway -> device   {"dst": "m5-a1b2c3", "setup": {"re": "<short id>", "sensors": {"tilt": {"margin_high": 30}}}}
 
 Each device is its own agent, agent://<src>. The gateway holds that agent's key
 and opens one session to the master per device, so a task reaches the device
@@ -41,6 +42,7 @@ from typing import Callable
 
 from edge.sensors import readings_capsule, sensors_capsule, validate_readings, validate_sensor_list
 from edge.upgrade import from_edge_wire, to_edge_wire, validate_edge
+from provision import TOPIC as SETUP_TOPIC, parse_setup
 from handshake import TOPIC as HELLO_TOPIC, negotiate
 from peer import Node, Peer, PeerRejected
 from primitive import Capsule, Trigger
@@ -163,10 +165,15 @@ class EdgeGateway:
         if c.trigger == Trigger.TASK:
             expires = c.created + timedelta(seconds=c.action_hints.ttl_seconds)
             _remember(device.tasks, sid, (c.id, expires))
-        answers = next((device.edge_ids[p] for p in c.provenance.derived_from if p in device.edge_ids), None)
-        wire = to_edge_wire(c, id_short=sid, re=answers)
+        if c.semantics.topic == SETUP_TOPIC and c.trigger == Trigger.TASK:   # not the ACKs on that topic
+            # a setup doesn't fit the stripped format; the device answers it with a task_result re=sid
+            from interpreter import to_wire
+            frame = {"dst": device.name, "setup": {"re": sid, "sensors": parse_setup(to_wire(c))}}
+        else:
+            answers = next((device.edge_ids[p] for p in c.provenance.derived_from if p in device.edge_ids), None)
+            frame = {"dst": device.name, "cap": to_edge_wire(c, id_short=sid, re=answers)}
         with self._write_lock:
-            self._write_frame({"dst": device.name, "cap": wire})
+            self._write_frame(frame)
 
     def _read(self, device: Device, peer: Peer) -> None:
         try:

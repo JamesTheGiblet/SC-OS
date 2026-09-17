@@ -35,6 +35,7 @@ class Talk:
         self.send_line = send_line
         self.count = 0
         self.task = None          # the task being carried out: {"id", "t", "s"}
+        self.setup = None         # a setup to apply: {"re", "sensors"}
         self.acked = []           # ids of our messages the master acknowledged
 
     def _next_id(self):
@@ -68,11 +69,15 @@ class Talk:
         if self.task is None:
             return None
         task, self.task = self.task, None
+        return self.result(task["id"], task["t"], task["s"], success, detail)
+
+    def result(self, re, topic, what, success, detail=""):
+        """Report the outcome of any task, by its short id."""
         cap = {
             "v": "1.0", "id": self._next_id(), "to": MASTER, "i": "inform",
-            "t": task["t"], "c": 1.0,
-            "s": _clip(("done: " if success else "failed: ") + task["s"], 120),
-            "tr": "task_result", "re": task["id"],
+            "t": _clip(topic, 32), "c": 1.0,
+            "s": _clip(("done: " if success else "failed: ") + what, 120),
+            "tr": "task_result", "re": re,
             "o": "success" if success else "failure",
         }
         if detail:
@@ -83,7 +88,8 @@ class Talk:
         """
         Handle one line from the link. Returns what happened:
         "task", "ack", "refuse", "describe" (the gateway asks for the sensor list),
-        "other", or None for lines that aren't ours.
+        "setup" (an operator setup to apply, in self.setup), "other", or None for
+        lines that aren't ours.
         """
         start = line.find("{")              # opening the port can leave junk bytes before a frame
         if start < 0:
@@ -99,6 +105,10 @@ class Talk:
             return "describe"
         if frame.get("dst") != self.name:
             return None
+        if isinstance(frame.get("setup"), dict):
+            setup = frame["setup"]
+            self.setup = {"re": setup.get("re", ""), "sensors": setup.get("sensors") or {}}
+            return "setup"
         cap = frame.get("cap") or {}
         if cap.get("tr") == "task" and cap.get("i") == "request":
             self.task = {"id": cap.get("id", ""), "t": cap.get("t", ""), "s": cap.get("s", "")}
@@ -111,3 +121,32 @@ class Talk:
         if cap.get("i") == "refuse":
             return "refuse"
         return "other"
+
+
+SETTABLE = ("margin_low", "margin_high", "sample_ms")
+
+
+def apply_setup(description, sensors):
+    """
+    Apply setup fields to a sensor description (a list of dicts). Returns
+    (new description, None) or (None, reason) without changing anything.
+    """
+    by_id = {}
+    for d in description:
+        by_id[d["id"]] = dict(d)
+    for sid, fields in sensors.items():
+        d = by_id.get(sid)
+        if d is None:
+            return None, "no sensor " + sid
+        for k, v in fields.items():
+            if k not in SETTABLE:
+                return None, sid + ": can't set " + k
+            if k == "sample_ms":
+                if v < 20:
+                    return None, sid + ": sample_ms under 20"
+                d[k] = int(v)
+            else:
+                d[k] = v
+        if not d["min"] <= d["margin_low"] <= d["margin_high"] <= d["max"]:
+            return None, sid + ": margins outside range"
+    return [by_id[d["id"]] for d in description], None

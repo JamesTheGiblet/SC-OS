@@ -39,6 +39,7 @@ from rules.__main__ import load_rule_file
 from rules.engine import RuleEngine
 from scheduler import Scheduler
 from sensing import KEY_PREFIX as SENSOR_KEY, SensorObserver
+from provision import SetupKeeper
 from store import Store
 from validator import CapsuleRejected
 
@@ -154,7 +155,7 @@ def main() -> int:
             log(f"rule {r['name']}: value={r['value']:+.2f} weight={r['weight']:.2f} "
                 f"n={r['evidence_count']} fires={'yes' if r['fires'] else 'no'}")
     sched = Scheduler(agents={ME: EchoAgent()}, store=store, rules=engine,
-                      observers=(SensorObserver(store),))
+                      observers=(SensorObserver(store), SetupKeeper(store, ME)))
     server = Server(node, sched)
     try:
         listener = SocketListener(args.host, args.port)
