@@ -207,12 +207,21 @@ The screen (landscape, 240×135) shows:
 
 - a header with the device name and the time from its real-time clock
 - tilt in large type: green when armed, yellow past 40°, grey until re-armed
-- accelerometer (g) and gyroscope (°/s) on three axes, the IMU's die temperature and battery voltage
+- accelerometer (g) and gyroscope (°/s) on three axes, the IMU's die temperature, the ESP32's own
+  temperature (large fixed offset: read it as a trend) and battery voltage
 - the link to Alice (report sent, ack, task received, result sent)
 - the waiting task in a yellow box with `A = yes  B = no`, and the last outcome sent (green or red)
 
-Readings are shown only on the device; nothing sends them to Alice yet. The microphone isn't read:
-MicroPython on the ESP32 has no PDM input.
+The buzzer beeps twice when a task arrives, chirps when you send a success and gives a low tone for
+a failure, without pausing the loop.
+
+Readings are shown only on the device; nothing sends them to Alice yet. Other hardware on the stick:
+
+| Part | State |
+| --- | --- |
+| SPM1423 PDM microphone (clock 0, data 34) | Not read. It answers when clocked, but MicroPython's I2S has no PDM input, and counting its data edges didn't track loudness. Needs a PDM-capable build or Arduino firmware. |
+| IR transmitter (pin 19, shared with the red LED) | Pulses whenever the LED blinks; no codes are sent. The ESP32's RMT peripheral could send real remote-control codes. |
+| Grove port (pins 32, 33) | Free for external sensors; nothing attached. |
 
 One-time setup (erases the stick; back up first if you want the factory firmware back):
 
@@ -237,7 +246,7 @@ The device names itself from its MAC (`m5-96c048`) and prints `# …` notes for 
 gateway skips. `sctalk.py` holds the protocol with no hardware imports, so the tests run it on the PC.
 `st7789.py` drives the screen and pushes only rows that changed; between rows the firmware reads
 the serial link, so a redraw can't delay an incoming task. `sensors.py` reads the IMU, clock,
-battery and buttons. `deploy.py` also sets the stick's clock from the PC's local time.
+battery, chip temperature and buttons, and plays the buzzer. `deploy.py` also sets the stick's clock from the PC's local time.
 
 ### Where state lives
 

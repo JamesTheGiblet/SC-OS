@@ -8,8 +8,10 @@ button) if it wasn't. The outcome goes back to Alice and moves the rule's trust.
 Tilt back under 20 degrees to re-arm. Button C (power, short press) turns the
 backlight on and off.
 
-The screen shows the clock, tilt, accelerometer, gyroscope, IMU temperature,
-battery voltage, the link to Alice, the waiting task and the last outcome.
+The screen shows the clock, tilt, accelerometer, gyroscope, IMU and chip
+temperature, battery voltage, the link to Alice, the waiting task and the last
+outcome. The buzzer beeps twice when a task arrives, chirps on success and gives
+a low tone on failure.
 
 Pins: hold power 4, red LED 19 (active high); screen, sensors and buttons in
 st7789.py and sensors.py. Lines that aren't JSON frames are notes for a person;
@@ -26,7 +28,7 @@ from machine import Pin
 
 import st7789 as tft
 from sctalk import Talk
-from sensors import Sensors
+from sensors import Buzzer, Sensors
 
 HOLD = Pin(4, Pin.OUT, value=1)          # keep power on when running from the battery
 LED = Pin(19, Pin.OUT, value=0)
@@ -59,7 +61,7 @@ class Screen:
         self.rows = tft.Lines(self.d)
         self.between_rows = between_rows
 
-    def draw(self, name, clock, tilt, accel, gyro, temp, volts, armed, link, task, last):
+    def draw(self, name, clock, tilt, accel, gyro, temp, chip, volts, armed, link, task, last):
         def put(*args, **kw):
             if self.rows.put(*args, **kw):
                 self.between_rows()
@@ -73,9 +75,9 @@ class Screen:
         if accel:
             put("acc", 38, 11, "acc %+5.2f %+5.2f %+5.2f g" % accel, tft.CYAN)
             put("gyr", 49, 11, "gyr %+5d %+5d %+5d dps" % tuple(int(g) for g in gyro), tft.CYAN)
-            put("env", 60, 11, "imu %4.1fC     bat %4.2fV" % (temp, volts), tft.WHITE)
+            put("env", 60, 11, "imu %4.1fC cpu %3dC  %4.2fV" % (temp, chip, volts), tft.WHITE)
         else:
-            put("env", 60, 11, "bat %4.2fV" % volts, tft.WHITE)
+            put("env", 60, 11, "cpu %3dC  bat %4.2fV" % (chip, volts), tft.WHITE)
         put("link", 72, 11, link, tft.GREY)
         if task:
             lines = wrap(task, 29)[:2]
@@ -96,6 +98,7 @@ def main():
     boot_tag = "".join("%02x" % b for b in os.urandom(2))
     talk = Talk(name, boot_tag, print)
     sensors = Sensors()
+    buzzer = Buzzer()
     poll = select.poll()
     poll.register(sys.stdin, select.POLLIN)
     link = "link: waiting for alice"
@@ -111,6 +114,7 @@ def main():
                 note("ignored %d bytes: %s" % (len(line), repr(line[:40]).replace("{", "(").replace("}", ")")))
             elif what == "task":
                 link = "alice: task received"
+                buzzer.play(Buzzer.TASK)
                 note("task: %s  (A = yes, B = no)" % talk.task["s"])
             elif what == "ack":
                 link = "alice: ack %s" % (talk.acked[-1] if talk.acked else "")
@@ -141,10 +145,12 @@ def main():
         if talk.task is not None and "A" in pressed:
             talk.complete(True, "confirmed by button A")
             last, link = "sent success (A)", "alice: result sent"
+            buzzer.play(Buzzer.SUCCESS)
             note("reported success")
         elif talk.task is not None and "B" in pressed:
             talk.complete(False, "denied by button B")
             last, link = "sent failure (B)", "alice: result sent"
+            buzzer.play(Buzzer.FAILURE)
             note("reported failure")
         if "C" in pressed:
             backlight = not backlight
@@ -168,7 +174,7 @@ def main():
                 elif not armed and tilt < TILT_REARM_DEG:
                     armed = True
             clock = sensors.clock() if sensors.rtc_ok else None
-            screen.draw(name, clock, tilt, accel, gyro, temp, sensors.battery_volts(),
+            screen.draw(name, clock, tilt, accel, gyro, temp, sensors.chip_celsius(), sensors.battery_volts(),
                         armed, link, talk.task["s"] if talk.task else None, last)
 
         # LED blinks while a task waits
@@ -181,6 +187,7 @@ def main():
 
         # wait for input rather than sleeping: the stdin buffer holds only ~260 bytes,
         # and an ACK and a task arrive back to back
+        buzzer.tick()
         poll.poll(20)
 
 

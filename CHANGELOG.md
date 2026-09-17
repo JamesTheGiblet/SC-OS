@@ -55,8 +55,12 @@ up across a process boundary.
   of a traceback. Checked on the device: flat stick read 1.01 g and 2.5° tilt, battery 4.16 V on
   USB, clock correct; 10 frames sent back to back with no gap all arrived while the screen redrew.
   Found on the device and fixed: 40 MHz SPI on the screen's pins crashed the firmware in a boot
-  loop (the limit on those pins is 26.7 MHz; it now uses 20 MHz). The microphone isn't read
-  (no PDM input in MicroPython on the ESP32).
+  loop (the limit on those pins is 26.7 MHz; it now uses 20 MHz).
+- **Buzzer and chip temperature on the M5StickC PLUS2.** Non-blocking tones on pin 2: two beeps
+  when a task arrives, a chirp on success, a low tone on failure (heard on the device). The screen
+  adds the ESP32's internal temperature, which has a large fixed offset. The microphone isn't
+  read: it answers when clocked, but MicroPython's I2S has no PDM input and counting its data edges
+  with the pulse counter didn't track loudness. IR (pin 19, shared with the LED) sends no codes.
 - **Verified on the device** (2026-09-17): `agent://m5-96c048` through `run_gateway.py --serial COM4`.
   Its outcomes moved topic `tilt_risk` and the verify rule, up on A and down on B, as the model says.
   Found on the device and fixed: frames ignored after the port was reopened (both sides now parse

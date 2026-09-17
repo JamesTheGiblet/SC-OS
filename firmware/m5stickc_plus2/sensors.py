@@ -1,8 +1,11 @@
 """
 The M5StickC PLUS2's sensors: IMU (MPU6886: accelerometer, gyroscope, die
-temperature), real-time clock (BM8563), battery voltage and the three buttons.
+temperature), real-time clock (BM8563), battery voltage, the ESP32's own
+temperature sensor, and the three buttons. Also the buzzer, the one sound output.
 
-Not read: the PDM microphone (MicroPython's I2S has no PDM input on the ESP32).
+Not read: the SPM1423 PDM microphone (clock 0, data 34). It answers when clocked,
+but MicroPython's I2S has no PDM input on the ESP32, and counting its data edges
+with the pulse counter didn't track loudness.
 
 Pins: I2C SDA 21 / SCL 22 (IMU 0x68, RTC 0x51), battery ADC 38 (halved by a
 divider), buttons A 37, B 39, C (power) 35, all active low.
@@ -10,7 +13,9 @@ divider), buttons A 37, B 39, C (power) 35, all active low.
 
 import math
 import time
-from machine import ADC, I2C, Pin
+
+import esp32
+from machine import ADC, I2C, PWM, Pin
 
 MPU = 0x68
 RTC = 0x51
@@ -64,6 +69,10 @@ class Sensors:
     def battery_volts(self):
         return self.bat.read_uv() * 2 / 1e6
 
+    def chip_celsius(self):
+        """The ESP32's internal sensor. It has a large fixed offset: useful for change, not absolute."""
+        return (esp32.raw_temperature() - 32) / 1.8
+
     def pressed(self):
         """Names of buttons held down now."""
         return [n for n, p in self.buttons.items() if p.value() == 0]
@@ -80,3 +89,37 @@ class Sensors:
         self.i2c.writeto_mem(RTC, 0x02, bytes([
             _to_bcd(second), _to_bcd(minute), _to_bcd(hour), _to_bcd(day),
             weekday, _to_bcd(month), _to_bcd(year % 100)]))
+
+
+class Buzzer:
+    """Tones on pin 2 that play without blocking: call tick() from the main loop."""
+
+    TASK = ((2000, 70), (0, 60), (2000, 70))
+    SUCCESS = ((1500, 70), (2500, 110))
+    FAILURE = ((700, 250),)
+
+    def __init__(self, duty=12000):
+        self.pwm = PWM(Pin(2), freq=2000, duty_u16=0)
+        self.duty = duty
+        self.queue = []
+        self.until = 0
+        self.muted = False
+
+    def play(self, tones):
+        if not self.muted:
+            self.queue = list(tones)
+            self.until = 0
+
+    def tick(self):
+        if time.ticks_diff(time.ticks_ms(), self.until) < 0:
+            return
+        if not self.queue:
+            self.pwm.duty_u16(0)
+            return
+        freq, ms = self.queue.pop(0)
+        if freq:
+            self.pwm.freq(freq)
+            self.pwm.duty_u16(self.duty)
+        else:
+            self.pwm.duty_u16(0)
+        self.until = time.ticks_add(time.ticks_ms(), ms)
