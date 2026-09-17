@@ -30,6 +30,28 @@ up across a process boundary.
   `-1.0 s` by Alice and `+1.0 s` by the phone. `verify-high-confidence-risk` became the first
   rule to reach `trusted` (+1.70, weight 21.97, 16 outcomes from three agents on two machines).
 - Both run scripts log the peer's clock offset on every hello. `run_bob.py` exits quietly on Ctrl+C.
+- **Edge devices report outcomes, through a gateway.** The stripped format gains `re` (the short id
+  of the message answered), `o` (`success` | `failure`) and `od` (detail); `o` and `re` are required
+  on `task_result` and `o`/`od` are refused elsewhere. `from_edge_wire(..., derived_from=)` sets the
+  outcome and parent; `to_edge_wire(..., re=)` carries them down.
+  `edge/gateway.py` and `run_gateway.py` (`--serial PORT` or `--stdio`) bridge line-delimited
+  device frames to Alice: each device is its own agent (`agent://<src>`) with a key the gateway
+  holds and its own signed session, so tasks reach it and its outcomes count. The gateway maps
+  short ids to full ones, rejects repeated device message ids, unknown or expired tasks, bad
+  names and messages for anyone but Alice, and reopens sessions Alice closed while idle.
+  `tests/test_gateway.py` (9): a simulated device's outcome moves Alice's rule over real TCP,
+  including after a dropped session and through the script on stdin/stdout. 135 tests in all.
+- **Firmware for an M5StickC PLUS2** (`firmware/m5stickc_plus2/`, MicroPython). Tilt past 40°
+  reports `tilt_risk`; the task from Alice's rule blinks the LED; button A reports success, B
+  failure. `sctalk.py` is the protocol with no hardware imports, tested on the PC against the
+  gateway and a real Alice. `deploy.py` copies files over the raw REPL with DTR/RTS held low
+  (`mpremote` resets this board when it opens the port).
+- **Verified on the device** (2026-09-17): `agent://m5-96c048` through `run_gateway.py --serial COM4`.
+  Its outcomes moved topic `tilt_risk` and the verify rule, up on A and down on B, as the model says.
+  Found on the device and fixed: frames ignored after the port was reopened (both sides now parse
+  from the first `{`); an ACK and task back to back overflowed the device's ~260-byte input buffer
+  (the firmware waits on input instead of sleeping; the gateway leaves 50 ms between frames and
+  skips `# ` note lines); new tilt reports replaced a waiting task (one question at a time).
 - **Asserting tests for the kernel and the law.** `tests/test_weight.py` (14, was a print script),
   `tests/test_validator.py` (13), `tests/test_interpreter.py` (13, including merge),
   `tests/test_scheduler.py` (14), `tests/test_network.py` (6). 126 tests in all.
@@ -208,12 +230,17 @@ up across a process boundary.
   only `Peer.recv` checks it.
 - `merge` builds an unaddressable sender (`agent://alice+agent://bob`), so no merged capsule
   passes validation.
-- Agent replies and edge upgrades don't set `derived_from`; `Provenance.signature` is always null.
+- Agent replies and edge messages that answer nothing don't set `derived_from`;
+  `Provenance.signature` is always null.
 - Self-description finds decisions, questions and limits by heading name; rename a heading and
   that capsule silently vanishes or reports zero items.
 - `demo.py` crashes with `UnicodeEncodeError` on `→` when stdout is cp1252 (Git Bash pipes on
   Windows). PowerShell and file redirection are fine.
-- Edge devices can't report outcomes: an edge `task_result` has no outcome field and is refused.
+- The gateway keeps short task ids and seen device ids in memory, and holds every device's key.
+  A restart loses in-flight tasks and reopens the duplicate window; control of the gateway is
+  control of its devices.
+- An edge outcome is a button press; nothing checks the tilt was real. The M5 link is USB serial,
+  not ESP-NOW, and the device's small input buffer can still lose a task in a burst.
 - Trust exists only in the node's database; lose the file and every rule and topic opinion
   starts over.
 - Logged values are rounded but stances aren't: a rule printed `value=+1.50 stance=leaning_trusted`

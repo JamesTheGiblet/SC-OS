@@ -165,12 +165,73 @@ Both sides log the other's clock offset on every hello, with a warning above 5 s
 First contact pins each side's key; a machine that regenerates its key (a new `keys/` directory)
 is rejected until the other side deletes that pin.
 
+### Edge devices through a gateway
+
+An edge device speaks the stripped format over a local link; `run_gateway.py` turns each device
+into its own agent with its own signed session to Alice. Start Alice first, then:
+
+```sh
+python run_gateway.py --stdio               # no device: type frames on stdin, read frames on stdout
+python run_gateway.py --serial COM5         # a device on USB serial (pip install pyserial)
+```
+
+One JSON frame per line:
+
+```text
+device -> gateway  {"src":"m5-a1b2c3","cap":{"v":"1.0","id":"r1","to":"alice","i":"inform","t":"tilt_risk","c":0.9,"s":"tilted 40 degrees","tr":"threshold"}}
+gateway -> device  {"dst":"m5-a1b2c3","cap":{"v":"1.0","id":"3f2a…","to":"m5-a1b2c3","i":"ack",…,"re":"r1"}}
+gateway -> device  {"dst":"m5-a1b2c3","cap":{"v":"1.0","id":"9c41…","to":"m5-a1b2c3","i":"request","t":"tilt_risk","s":"verify: tilted 40 degrees","tr":"task"}}
+device -> gateway  {"src":"m5-a1b2c3","cap":{"v":"1.0","id":"r2","to":"alice","i":"inform","t":"tilt_risk","c":1,"s":"checked","tr":"task_result","re":"9c41…","o":"success"}}
+```
+
+- **`re`** names the message this one answers, by short id. **`o`** (`success` | `failure`) and
+  optional **`od`** (detail) are required on a `task_result` and refused anywhere else.
+- **The gateway is the trust boundary.** Devices don't sign. The gateway holds a key per device
+  (`keys/<src>.ed25519`) and sends as `agent://<src>`, so Alice's rule sends its task to that
+  agent and counts the outcome only from it, exactly as for Bob.
+- **The gateway rejects** malformed frames, names that aren't `[a-z0-9-]` (16 characters at most),
+  messages for anyone but Alice (no relaying), a `task_result` whose `re` isn't a task it
+  forwarded to that device (or has expired), and a message id that device already sent.
+- **Sessions come and go.** Alice closes idle sessions after 30 s; the device's next frame opens a
+  new one. Short-id tables belong to the device, so a result can arrive on a later session.
+
+### An M5StickC PLUS2 as the edge device
+
+`firmware/m5stickc_plus2/` runs on the stick under MicroPython, over USB serial to the gateway.
+Tilt it past 40°: it reports `tilt_risk` as a threshold, Alice's verify rule sends a task back,
+and the red LED blinks. Press **A** (front) if the tilt was real, **B** (side) if not; the outcome
+goes to Alice. It asks one question at a time: no new report while a task waits. Stand it under
+20° to re-arm. The screen isn't used yet.
+
+One-time setup (erases the stick; back up first if you want the factory firmware back):
+
+```sh
+pip install esptool pyserial
+python -m esptool --port COM4 read-flash 0 ALL firmware/backup/factory.bin     # optional, 8 MB, git-ignored
+python -m esptool --port COM4 erase-flash
+python -m esptool --port COM4 --baud 460800 write-flash 0x1000 ESP32_GENERIC-SPIRAM-<date>-v1.29.0.bin
+```
+
+The image is the generic ESP32 SPIRAM build from micropython.org. Then copy the firmware, and run:
+
+```sh
+python firmware/m5stickc_plus2/deploy.py COM4       # copies sctalk.py and main.py, resets the stick
+python run_alice.py --host 0.0.0.0
+python run_gateway.py --serial COM4
+```
+
+`deploy.py` exists because `mpremote` toggles DTR/RTS when it opens the port, which resets this
+board before its REPL can be reached; `run_gateway.py` holds both lines low for the same reason.
+The device names itself from its MAC (`m5-96c048`) and prints `# …` notes for a person, which the
+gateway skips. `sctalk.py` holds the protocol with no hardware imports, so the tests run it on the PC.
+
 ### Where state lives
 
 | Path | Contents | In git |
 | --- | --- | --- |
 | `store/<name>.db` | SQLite ledger: every capsule sent or received, with signatures; plus the node's opinions (rule trust and topic opinions) and counted outcomes | no |
 | `peers.json` | Where `run_bob.py` connects when no `--host` is given | no |
+| `store/gateway.db`, `keys/<device>.ed25519`, `store/<device>.pins.json` | The gateway's ledger, and the key and pins it holds for each edge device | no |
 | `store/<name>.pins.json` | Agent id → pinned public key. Delete to forget a peer. | no |
 | `keys/<name>.ed25519` | The node's private key | no |
 | `store/self.db`, `keys/sc-os.ed25519` | SC-OS's self-description and the key that signs it | no |
@@ -218,6 +279,18 @@ sqlite3 store/alice.db "SELECT json_extract(capsule, '$.semantics.claims[0].stat
     `verify-high-confidence-risk` became the first rule to reach `trusted`, earned from outcomes
     reported by Bob, Carol and the phone: +1.70, weight 21.97, 16 outcomes. Topic
     `supply_chain_risk` reached +1.60.
+- **A real edge device (2026-09-17):** an M5StickC PLUS2 (ESP32-PICO-V3-02, MicroPython 1.29) on
+  USB serial, through `run_gateway.py`, to Alice on the same PC, as `agent://m5-96c048`.
+  - Tilt reports from its IMU fired Alice's verify rule, the task came back to the stick, and
+    button presses returned outcomes that Alice counted.
+  - Success moved topic `tilt_risk` up 0.1; failure (button B) moved it and the rule down 0.2 and
+    added weight 3. A success at the +2.0 maximum added weight only. The same rule now holds
+    evidence from Bob, Carol, the phone and the stick (+1.70, weight 36.97).
+  - Three problems showed up only on the device and were fixed: frames the device ignored after
+    the port was reopened (it now parses from the first `{`); an ACK and a task arriving back to
+    back overflowed its ~260-byte input buffer (it now waits on input instead of sleeping, and the
+    gateway leaves 50 ms between frames); and new tilt reports replaced a task still waiting (it
+    now asks one question at a time).
 
 ### Tests
 
@@ -232,7 +305,8 @@ python tests/test_validator.py      # 13: every rejection code: schema, version,
 python tests/test_interpreter.py    # 13: exact wire round-trip, stable digests, expiry, actionable, merge
 python tests/test_scheduler.py      # 14: routing, ledger, replies, verified outcomes only, opinions survive restart
 python tests/test_network.py        # 6:  peers.json, clock offset, any working directory, session over a network address
-python -m pytest tests              # all 126
+python tests/test_gateway.py        # 9:  edge outcome fields, device outcome teaches Alice's rule, rejections, session drop, firmware protocol
+python -m pytest tests              # all 135
 ```
 
 ## What a capsule looks like
@@ -311,6 +385,8 @@ Capsule ─to_wire─► dict ─sign─► envelope ──TCP──► Peer.rec
 | `weight.py` | Leighton Weight: exponential decay, `Opinion` (value + weight), `blend` |
 | `handshake.py` | Hello capsule, version and predicate negotiation, `clock_offset` |
 | `run_alice.py`, `run_bob.py` | Multi-peer server; client that runs as any `--name` |
+| `run_gateway.py`, `edge/gateway.py` | Edge gateway: device frames on serial or stdio ↔ one signed session per device |
+| `firmware/m5stickc_plus2/` | MicroPython firmware for the M5StickC PLUS2 (`main.py`, `sctalk.py`) and `deploy.py` |
 | `demo.py` | Single-process walkthrough of the whole pipeline |
 | `boot/genesis.py` | A node's first capsule |
 | `boot/discovery.py` | `peers.json` (`host:port` entries), `parse_peer` |
@@ -369,6 +445,9 @@ your own evidence count and decay clock. Never store it as your opinion.
   idle time returns it to unknown.
 - **Edge round-trip.** A stripped ESP32 message upgrades to a full capsule and
   downgrades back to the identical stripped form.
+- **Edge devices learn with the rest.** Through the gateway, a device's threshold report fires
+  Alice's rule, the task reaches the device, and its `task_result` moves the rule's trust, signed
+  as the device's agent. Tested with a simulated device, and run on a real M5StickC PLUS2.
 - **Rules learn from what happens.** Rules are signed capsules; only a node's own rules run.
   Their outputs cite the rule and the input. Reported outcomes move each rule's trust, a rule with
   no trust left stops firing, and a rule whose trust fades is forgotten. Tested across processes
@@ -426,8 +505,8 @@ your own evidence count and decay clock. Never store it as your opinion.
 - **`SocketTransport.recv` on its own trusts the sender's label.** It returns the envelope's
   self-declared `pubkey_id`. `Peer.recv` does the checking; call the transport directly
   and you get none of it.
-- **Some provenance is missing.** Agent replies (`EchoAgent`) and `from_edge_wire` don't set
-  `derived_from`. `Provenance.signature` is always `null` and unrelated to the envelope signature.
+- **Some provenance is missing.** Agent replies (`EchoAgent`) don't set `derived_from`, nor do
+  edge messages that answer nothing. `Provenance.signature` is always `null` and unrelated to the envelope signature.
 - **No merged capsule is valid.** `merge` joins senders into `agent://alice+agent://bob` (even
   `agent://bob+agent://bob` for one sender), which the schema rejects. Merge works only on capsules
   you never validate.
@@ -439,8 +518,15 @@ your own evidence count and decay clock. Never store it as your opinion.
   as when Git Bash pipes Python's output, `demo.py` stops with `UnicodeEncodeError`.
   PowerShell and file redirection work; `self_describe.py` forces UTF-8 itself.
   Workaround: `PYTHONIOENCODING=utf-8`.
-- **Edge devices can't report outcomes.** The stripped ESP-NOW format has no outcome field, so an
-  edge message with trigger `task_result` upgrades to a capsule Alice refuses (`unknown_task`).
+- **The gateway forgets on restart.** Short task ids and seen message ids live in memory. Restart
+  the gateway and a result for an earlier task is refused (`edge_unknown_task`), and a device message
+  id it saw before is accepted again. The gateway also holds every device's key: whoever controls
+  it can speak as any of its devices.
+- **An edge outcome is a button press.** The stick reports what a person pressed; nothing checks
+  that the tilt was real. It has no screen output yet, and the stick's link is USB serial, not ESP-NOW.
+- **Small device buffers.** The stick's input buffer holds about 260 bytes. The gateway paces frames
+  and the firmware reads promptly, but a burst of long frames could still overflow it; a lost task
+  simply never gets an outcome.
 - **Trust lives only in the node's database.** Delete `store/<name>.db` and every rule and topic
   opinion starts over at unknown; there's no backup or export of opinions.
 
@@ -453,7 +539,8 @@ your own evidence count and decay clock. Never store it as your opinion.
 4. ~~Replay protection.~~ Done.
 5. ~~SQLite ledger.~~ Done. Next: prune on a schedule.
 6. ~~Outcome field on `task_result` capsules.~~ Done, with rules that learn from it.
-   ~~Persisting topic opinions.~~ Done. Next: edge devices reporting outcomes.
+   ~~Persisting topic opinions.~~ Done. ~~Edge devices reporting outcomes.~~ Done, through the
+   gateway, verified on an M5StickC PLUS2 over USB serial. Next: ESP-NOW between two boards.
 7. Relaying between peers and a queue for undelivered replies.
 8. ~~Asserting tests for validator, interpreter, merge and scheduler.~~ Done.
 9. ~~Self-description capsules.~~ Done. Next: share them with peers after the hello, and decide

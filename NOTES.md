@@ -133,8 +133,11 @@ Each decision was made against the code as it stood; revisit only with a reason.
 - **How far to trust a reported outcome?** A rule learns from what the worker says happened.
   Should outcomes from a peer be weighted by trust in that peer, or confirmed by a second observer?
 - **Rule chaining.** Allow rules to fire on rule outputs with a depth limit?
-- **Edge outcomes.** The stripped ESP-NOW format has no outcome field. Add one, or have the
-  gateway report outcomes for edge devices?
+- **Gateway state across restarts.** Short task ids and seen device ids are in memory. Persist them
+  in `store/gateway.db`, or accept that a gateway restart loses in-flight tasks?
+- **Keeping edge sessions open.** Alice drops idle sessions after 30 s, so a quiet device reconnects
+  (two more hellos) for each burst. Heartbeats from the gateway, a longer idle timeout for gateway
+  sessions, or accept it?
 - **Merged sender.** `merge` builds `agent://alice+agent://bob`, which isn't addressable and fails
   schema validation, so no merged capsule is valid today.
   Proposal on the table: keep `sender` as the node doing the merge, both parents in
@@ -159,8 +162,10 @@ Each decision was made against the code as it stood; revisit only with a reason.
 
 ## Next
 
-1. **Build order step 4: one ESP32 → gateway → master.** PC ↔ phone (step 3) passed on
-   2026-09-17. Still open from step 3: NAT and reconnecting within one server process after a silent drop.
+1. **Build order step 4 done over USB serial** (2026-09-17): an M5StickC PLUS2 reports tilt,
+   carries out the rule's task by button press and teaches Alice. Still open: ESP-NOW between two
+   boards (the gateway radio), the device's screen, and from step 3: NAT and reconnecting within
+   one server process after a silent drop.
 2. **Make `hal/` an interface.** Protocols for transport, clock and a sensor bus; move
    implementations out; a simulated sensor bus for the laptop.
 3. **Bootstrap:** signed, stored genesis, then `__hardware__`, `__setup__`, `__sensors__`.

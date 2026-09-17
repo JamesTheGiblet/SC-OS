@@ -8,3 +8,4 @@ store/*.db
 store/*.db-wal
 store/*.db-shm
 peers.json
+firmware/backup/

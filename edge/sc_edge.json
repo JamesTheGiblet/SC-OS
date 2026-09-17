@@ -16,6 +16,12 @@
     "tr": {
       "type": "string",
       "enum": ["none", "task", "task_result", "threshold", "stuck", "heartbeat", "announce"]
-    }
-  }
+    },
+    "re": { "type": "string", "minLength": 1, "maxLength": 16 },
+    "o":  { "type": "string", "enum": ["success", "failure"] },
+    "od": { "type": "string", "maxLength": 60 }
+  },
+  "if":   { "properties": { "tr": { "const": "task_result" } } },
+  "then": { "required": ["re", "o"] },
+  "else": { "not": { "anyOf": [ { "required": ["o"] }, { "required": ["od"] } ] } }
 }
