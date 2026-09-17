@@ -1,79 +1,108 @@
 """
 M5StickC PLUS2 as an SC-OS edge device (MicroPython), over USB serial to run_gateway.py.
 
-Tilt the stick past 40 degrees: it reports "tilt_risk" as a threshold (not while a task waits). Alice's
-verify rule sends a task back; the LED blinks while the task waits. Press A (the
-big front button) if the report was real, B (the side button) if it wasn't. The
-outcome goes back to Alice and moves the rule's trust. Tilt back under 20 degrees
-to re-arm.
+Tilt the stick past 40 degrees: it reports "tilt_risk" as a threshold (not while a
+task waits). Alice's verify rule sends a task back; it shows on the screen and the
+LED blinks. Press A (the big front button) if the report was real, B (the side
+button) if it wasn't. The outcome goes back to Alice and moves the rule's trust.
+Tilt back under 20 degrees to re-arm. Button C (power, short press) turns the
+backlight on and off.
 
-Pins (M5StickC PLUS2): hold power 4, red LED 19 (active high), button A 37,
-button B 39 (buttons active low), IMU MPU6886 on I2C SDA 21 / SCL 22 at 0x68.
-Lines that aren't JSON frames are notes for a person; the gateway ignores them.
+The screen shows the clock, tilt, accelerometer, gyroscope, IMU temperature,
+battery voltage, the link to Alice, the waiting task and the last outcome.
+
+Pins: hold power 4, red LED 19 (active high); screen, sensors and buttons in
+st7789.py and sensors.py. Lines that aren't JSON frames are notes for a person;
+the gateway ignores them.
 """
 
-import math
 import os
 import select
 import sys
 import time
 
 import machine
-from machine import I2C, Pin
+from machine import Pin
 
+import st7789 as tft
 from sctalk import Talk
+from sensors import Sensors
 
 HOLD = Pin(4, Pin.OUT, value=1)          # keep power on when running from the battery
 LED = Pin(19, Pin.OUT, value=0)
-BTN_A = Pin(37, Pin.IN)
-BTN_B = Pin(39, Pin.IN)
 
 TILT_REPORT_DEG = 40
 TILT_REARM_DEG = 20
-MPU = 0x68
-
-i2c = I2C(0, scl=Pin(22), sda=Pin(21), freq=400000)
-
-
-def imu_init():
-    i2c.writeto_mem(MPU, 0x6B, b"\x00")  # wake
-    time.sleep_ms(50)
-    i2c.writeto_mem(MPU, 0x1C, b"\x00")  # accelerometer +-2 g
-
-
-def tilt_degrees():
-    raw = i2c.readfrom_mem(MPU, 0x3B, 6)
-    ax, ay, az = [((raw[i] << 8 | raw[i + 1]) ^ 0x8000) - 0x8000 for i in (0, 2, 4)]
-    norm = math.sqrt(ax * ax + ay * ay + az * az) or 1
-    return math.degrees(math.acos(max(-1.0, min(1.0, az / norm))))
+SAMPLE_MS = 200
 
 
 def note(text):
     print("# " + text)
 
 
+def wrap(text, width):
+    lines, line = [], ""
+    for word in text.split():
+        if line and len(line) + 1 + len(word) > width:
+            lines.append(line)
+            line = word
+        else:
+            line = (line + " " + word).strip()
+    lines.append(line)
+    return lines
+
+
+class Screen:
+    def __init__(self, between_rows):
+        """between_rows() runs after each row pushed to the panel, to keep reading serial input."""
+        self.d = tft.Display()
+        self.rows = tft.Lines(self.d)
+        self.between_rows = between_rows
+
+    def draw(self, name, clock, tilt, accel, gyro, temp, volts, armed, link, task, last):
+        def put(*args, **kw):
+            if self.rows.put(*args, **kw):
+                self.between_rows()
+        t = "%02d:%02d:%02d" % clock[3:6] if clock else "--:--:--"
+        put("head", 0, 14, "%-21s%s" % (name, t), tft.WHITE, tft.BLUE)
+        if tilt is None:
+            put("tilt", 16, 20, "NO IMU", tft.RED, big=True)
+        else:
+            colour = tft.YELLOW if tilt > TILT_REPORT_DEG else (tft.GREEN if armed else tft.GREY)
+            put("tilt", 16, 20, "TILT %3d" % tilt, colour, big=True)
+        if accel:
+            put("acc", 38, 11, "acc %+5.2f %+5.2f %+5.2f g" % accel, tft.CYAN)
+            put("gyr", 49, 11, "gyr %+5d %+5d %+5d dps" % tuple(int(g) for g in gyro), tft.CYAN)
+            put("env", 60, 11, "imu %4.1fC     bat %4.2fV" % (temp, volts), tft.WHITE)
+        else:
+            put("env", 60, 11, "bat %4.2fV" % volts, tft.WHITE)
+        put("link", 72, 11, link, tft.GREY)
+        if task:
+            lines = wrap(task, 29)[:2]
+            put("task1", 86, 11, lines[0], tft.BLACK, tft.YELLOW)
+            put("task2", 97, 11, lines[1] if len(lines) > 1 else "", tft.BLACK, tft.YELLOW)
+            put("task3", 108, 11, "A = yes          B = no", tft.BLACK, tft.YELLOW)
+        else:
+            put("task1", 86, 11, "", tft.BLACK)
+            put("task2", 97, 11, "tilt past %d deg to report" % TILT_REPORT_DEG, tft.GREY)
+            put("task3", 108, 11, "", tft.BLACK)
+        colour = tft.GREEN if last.startswith("sent success") else (
+            tft.RED if last.startswith("sent failure") else tft.GREY)
+        put("last", 122, 13, last, colour)
+
+
 def main():
     name = "m5-" + "".join("%02x" % b for b in machine.unique_id()[-3:])
     boot_tag = "".join("%02x" % b for b in os.urandom(2))
     talk = Talk(name, boot_tag, print)
-
-    try:
-        imu_init()
-        imu_ok = True
-    except OSError as e:
-        imu_ok = False
-        note("IMU not found: %s; buttons still report" % e)
-
+    sensors = Sensors()
     poll = select.poll()
     poll.register(sys.stdin, select.POLLIN)
-    note("%s ready: tilt past %d degrees to report" % (name, TILT_REPORT_DEG))
-    talk.report("status", "%s online" % name, 1.0, trigger="announce")
+    link = "link: waiting for alice"
 
-    armed = True
-    last_a = last_b = 1
-    blink_at = time.ticks_ms()
-    while True:
-        # link: tasks and acks from the gateway
+    def read_link():
+        """Handle every frame waiting on the link: tasks and acks from the gateway."""
+        nonlocal link
         while poll.poll(0):
             line = sys.stdin.readline()
             what = talk.receive_line(line)
@@ -81,33 +110,66 @@ def main():
                 # no braces in the note, or the gateway would try to parse it as a frame
                 note("ignored %d bytes: %s" % (len(line), repr(line[:40]).replace("{", "(").replace("}", ")")))
             elif what == "task":
+                link = "alice: task received"
                 note("task: %s  (A = yes, B = no)" % talk.task["s"])
+            elif what == "ack":
+                link = "alice: ack %s" % (talk.acked[-1] if talk.acked else "")
             elif what == "refuse":
+                link = "alice: refused"
                 note("refused by the master")
 
-        # sensor
-        if imu_ok:
-            try:
-                deg = tilt_degrees()
-            except OSError:
-                deg = 0
-            # one question at a time: a new report would replace the task still waiting
-            if armed and deg > TILT_REPORT_DEG and talk.task is None:
-                talk.report("tilt_risk", "tilted %d degrees" % deg, 0.9)
-                armed = False
-            elif not armed and deg < TILT_REARM_DEG:
-                armed = True
+    screen = Screen(read_link)          # reads the link between row pushes, too
+    if not sensors.imu_ok:
+        note("IMU not found; buttons still report")
+    note("%s ready: tilt past %d degrees to report" % (name, TILT_REPORT_DEG))
+    talk.report("status", "%s online" % name, 1.0, trigger="announce")
 
-        # buttons: carry out the task
-        a, b = BTN_A.value(), BTN_B.value()
-        if talk.task is not None:
-            if last_a == 1 and a == 0:
-                talk.complete(True, "confirmed by button A")
-                note("reported success")
-            elif last_b == 1 and b == 0:
-                talk.complete(False, "denied by button B")
-                note("reported failure")
-        last_a, last_b = a, b
+    armed = True
+    backlight = True
+    last = "last: none yet"
+    held = set()
+    blink_at = sample_at = time.ticks_ms()
+    reading = (None, None, None, None)
+
+    while True:
+        read_link()
+
+        # buttons, on press
+        now_held = set(sensors.pressed())
+        pressed = now_held - held
+        held = now_held
+        if talk.task is not None and "A" in pressed:
+            talk.complete(True, "confirmed by button A")
+            last, link = "sent success (A)", "alice: result sent"
+            note("reported success")
+        elif talk.task is not None and "B" in pressed:
+            talk.complete(False, "denied by button B")
+            last, link = "sent failure (B)", "alice: result sent"
+            note("reported failure")
+        if "C" in pressed:
+            backlight = not backlight
+            screen.d.backlight(backlight)
+
+        # sensors and screen
+        if time.ticks_diff(time.ticks_ms(), sample_at) >= SAMPLE_MS:
+            sample_at = time.ticks_ms()
+            if sensors.imu_ok:
+                try:
+                    reading = sensors.imu()
+                except OSError:
+                    reading = (None, None, None, None)
+            accel, gyro, temp, tilt = reading
+            # one question at a time: a new report would replace the task still waiting
+            if tilt is not None:
+                if armed and tilt > TILT_REPORT_DEG and talk.task is None:
+                    talk.report("tilt_risk", "tilted %d degrees" % tilt, 0.9)
+                    armed = False
+                    link = "sent tilt_risk %d deg" % tilt
+                elif not armed and tilt < TILT_REARM_DEG:
+                    armed = True
+            clock = sensors.clock() if sensors.rtc_ok else None
+            screen.draw(name, clock, tilt, accel, gyro, temp, sensors.battery_volts(),
+                        armed, link, talk.task["s"] if talk.task else None, last)
 
         # LED blinks while a task waits
         if talk.task is not None:
@@ -119,7 +181,7 @@ def main():
 
         # wait for input rather than sleeping: the stdin buffer holds only ~260 bytes,
         # and an ACK and a task arrive back to back
-        poll.poll(50)
+        poll.poll(20)
 
 
 main()

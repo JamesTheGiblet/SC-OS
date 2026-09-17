@@ -201,7 +201,18 @@ device -> gateway  {"src":"m5-a1b2c3","cap":{"v":"1.0","id":"r2","to":"alice","i
 Tilt it past 40°: it reports `tilt_risk` as a threshold, Alice's verify rule sends a task back,
 and the red LED blinks. Press **A** (front) if the tilt was real, **B** (side) if not; the outcome
 goes to Alice. It asks one question at a time: no new report while a task waits. Stand it under
-20° to re-arm. The screen isn't used yet.
+20° to re-arm. Button C (power, short press) turns the backlight on and off.
+
+The screen (landscape, 240×135) shows:
+
+- a header with the device name and the time from its real-time clock
+- tilt in large type: green when armed, yellow past 40°, grey until re-armed
+- accelerometer (g) and gyroscope (°/s) on three axes, the IMU's die temperature and battery voltage
+- the link to Alice (report sent, ack, task received, result sent)
+- the waiting task in a yellow box with `A = yes  B = no`, and the last outcome sent (green or red)
+
+Readings are shown only on the device; nothing sends them to Alice yet. The microphone isn't read:
+MicroPython on the ESP32 has no PDM input.
 
 One-time setup (erases the stick; back up first if you want the factory firmware back):
 
@@ -224,6 +235,9 @@ python run_gateway.py --serial COM4
 board before its REPL can be reached; `run_gateway.py` holds both lines low for the same reason.
 The device names itself from its MAC (`m5-96c048`) and prints `# …` notes for a person, which the
 gateway skips. `sctalk.py` holds the protocol with no hardware imports, so the tests run it on the PC.
+`st7789.py` drives the screen and pushes only rows that changed; between rows the firmware reads
+the serial link, so a redraw can't delay an incoming task. `sensors.py` reads the IMU, clock,
+battery and buttons. `deploy.py` also sets the stick's clock from the PC's local time.
 
 ### Where state lives
 
@@ -305,8 +319,8 @@ python tests/test_validator.py      # 13: every rejection code: schema, version,
 python tests/test_interpreter.py    # 13: exact wire round-trip, stable digests, expiry, actionable, merge
 python tests/test_scheduler.py      # 14: routing, ledger, replies, verified outcomes only, opinions survive restart
 python tests/test_network.py        # 6:  peers.json, clock offset, any working directory, session over a network address
-python tests/test_gateway.py        # 9:  edge outcome fields, device outcome teaches Alice's rule, rejections, session drop, firmware protocol
-python -m pytest tests              # all 135
+python tests/test_gateway.py        # 10: edge outcome fields, device outcome teaches Alice's rule, rejections, session drop, firmware protocol
+python -m pytest tests              # all 136
 ```
 
 ## What a capsule looks like
@@ -386,7 +400,7 @@ Capsule ─to_wire─► dict ─sign─► envelope ──TCP──► Peer.rec
 | `handshake.py` | Hello capsule, version and predicate negotiation, `clock_offset` |
 | `run_alice.py`, `run_bob.py` | Multi-peer server; client that runs as any `--name` |
 | `run_gateway.py`, `edge/gateway.py` | Edge gateway: device frames on serial or stdio ↔ one signed session per device |
-| `firmware/m5stickc_plus2/` | MicroPython firmware for the M5StickC PLUS2 (`main.py`, `sctalk.py`) and `deploy.py` |
+| `firmware/m5stickc_plus2/` | MicroPython firmware for the M5StickC PLUS2: `main.py`, `sctalk.py` (protocol), `st7789.py` (screen), `sensors.py`, and `deploy.py` |
 | `demo.py` | Single-process walkthrough of the whole pipeline |
 | `boot/genesis.py` | A node's first capsule |
 | `boot/discovery.py` | `peers.json` (`host:port` entries), `parse_peer` |
@@ -523,10 +537,12 @@ your own evidence count and decay clock. Never store it as your opinion.
   id it saw before is accepted again. The gateway also holds every device's key: whoever controls
   it can speak as any of its devices.
 - **An edge outcome is a button press.** The stick reports what a person pressed; nothing checks
-  that the tilt was real. It has no screen output yet, and the stick's link is USB serial, not ESP-NOW.
-- **Small device buffers.** The stick's input buffer holds about 260 bytes. The gateway paces frames
-  and the firmware reads promptly, but a burst of long frames could still overflow it; a lost task
-  simply never gets an outcome.
+  that the tilt was real. The stick's link is USB serial, not ESP-NOW.
+- **Small device buffers.** The stick's serial input buffer is small. The gateway paces frames and
+  the firmware reads between screen rows (10 frames sent back to back with no gap all arrived), but
+  a long enough burst could still overflow it; a lost task simply never gets an outcome.
+- **Device readings stay on the device.** Accelerometer, gyroscope, temperature and battery are
+  displayed but not reported, so Alice has no opinion about any sensor yet.
 - **Trust lives only in the node's database.** Delete `store/<name>.db` and every rule and topic
   opinion starts over at unknown; there's no backup or export of opinions.
 

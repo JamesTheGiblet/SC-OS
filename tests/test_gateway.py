@@ -259,6 +259,14 @@ def test_device_firmware_protocol_through_gateway():
         alice.close()
 
 
+def test_firmware_files_compile():
+    """MicroPython can't run here, but every firmware file must at least be valid Python."""
+    files = sorted((ROOT / "firmware" / "m5stickc_plus2").glob("*.py"))
+    assert {f.name for f in files} >= {"main.py", "sctalk.py", "sensors.py", "st7789.py", "deploy.py"}
+    for f in files:
+        compile(f.read_text(encoding="utf-8"), str(f), "exec")
+
+
 def test_short_id():
     assert short_id("urn:uuid:12345678-9abc-def0-1234-56789abcdef0") == "123456789abc"
 

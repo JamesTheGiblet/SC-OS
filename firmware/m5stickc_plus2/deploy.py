@@ -1,7 +1,7 @@
 """
 Copy the firmware to an M5StickC PLUS2 running MicroPython, over its raw REPL.
 
-    python firmware/m5stickc_plus2/deploy.py COM4            # copy sctalk.py and main.py, then reset
+    python firmware/m5stickc_plus2/deploy.py COM4            # copy the firmware, set the clock, reset
     python firmware/m5stickc_plus2/deploy.py COM4 --exec "print(1)"
     python firmware/m5stickc_plus2/deploy.py COM4 --remove-main   # stop auto-start (keeps sctalk.py)
 
@@ -12,12 +12,13 @@ before the REPL can be reached. This keeps both low.
 import argparse
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import serial
 
 HERE = Path(__file__).resolve().parent
-FILES = ("sctalk.py", "main.py")
+FILES = ("sctalk.py", "st7789.py", "sensors.py", "main.py")      # main.py last: it starts on reset
 CHUNK = 256
 
 
@@ -79,7 +80,11 @@ def main() -> int:
     ap.add_argument("--remove-main", action="store_true")
     args = ap.parse_args()
 
-    repl = RawRepl(args.port)
+    try:
+        repl = RawRepl(args.port)
+    except serial.SerialException as e:
+        print(f"FAIL cannot open {args.port}: {e}. Is run_gateway.py still using it?", file=sys.stderr)
+        return 1
     try:
         repl.enter()
         if args.code:
@@ -92,6 +97,10 @@ def main() -> int:
         for name in FILES:
             repl.put(HERE / name, name)
             print(f"copied {name}")
+        now = datetime.now()                    # the stick shows local time
+        repl.exec("from sensors import Sensors; Sensors().set_clock(%d, %d, %d, %d, %d, %d, %d)"
+                  % (now.year, now.month, now.day, now.isoweekday() % 7, now.hour, now.minute, now.second))
+        print(f"clock set to {now:%Y-%m-%d %H:%M:%S}")
         repl.soft_reset()
         print("reset: main.py is running")
         return 0

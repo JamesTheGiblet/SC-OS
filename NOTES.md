@@ -163,15 +163,19 @@ Each decision was made against the code as it stood; revisit only with a reason.
 ## Next
 
 1. **Build order step 4 done over USB serial** (2026-09-17): an M5StickC PLUS2 reports tilt,
-   carries out the rule's task by button press and teaches Alice. Still open: ESP-NOW between two
-   boards (the gateway radio), the device's screen, and from step 3: NAT and reconnecting within
-   one server process after a silent drop.
-2. **Make `hal/` an interface.** Protocols for transport, clock and a sensor bus; move
+   carries out the rule's task by button press and teaches Alice. Its screen shows clock, tilt,
+   accelerometer, gyroscope, IMU temperature, battery, link state and the waiting task. Still
+   open: ESP-NOW between two boards (the gateway radio), and from step 3: NAT and reconnecting
+   within one server process after a silent drop.
+2. **Sensors into SC-OS.** The M5 displays its readings but reports none. Next: a `__sensors__`
+   capsule describing them (target design 7) and the read path (target design 9): readings checked
+   against margins, outcomes recorded for `sensor:<id>`, readings sent when they change.
+3. **Make `hal/` an interface.** Protocols for transport, clock and a sensor bus; move
    implementations out; a simulated sensor bus for the laptop.
-3. **Bootstrap:** signed, stored genesis, then `__hardware__`, `__setup__`, `__sensors__`.
-4. **Merged sender** decision (merge output currently fails validation).
-5. **Prune on a schedule** in `run_alice.py`.
-6. **Relaying and a reply queue**, which turn the star into a network.
+4. **Bootstrap:** signed, stored genesis, then `__hardware__`, `__setup__`, `__sensors__`.
+5. **Merged sender** decision (merge output currently fails validation).
+6. **Prune on a schedule** in `run_alice.py`.
+7. **Relaying and a reply queue**, which turn the star into a network.
 
 ## Housekeeping
 

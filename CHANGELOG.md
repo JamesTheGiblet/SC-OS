@@ -40,12 +40,23 @@ up across a process boundary.
   short ids to full ones, rejects repeated device message ids, unknown or expired tasks, bad
   names and messages for anyone but Alice, and reopens sessions Alice closed while idle.
   `tests/test_gateway.py` (9): a simulated device's outcome moves Alice's rule over real TCP,
-  including after a dropped session and through the script on stdin/stdout. 135 tests in all.
+  including after a dropped session and through the script on stdin/stdout. 136 tests in all.
 - **Firmware for an M5StickC PLUS2** (`firmware/m5stickc_plus2/`, MicroPython). Tilt past 40°
   reports `tilt_risk`; the task from Alice's rule blinks the LED; button A reports success, B
   failure. `sctalk.py` is the protocol with no hardware imports, tested on the PC against the
   gateway and a real Alice. `deploy.py` copies files over the raw REPL with DTR/RTS held low
   (`mpremote` resets this board when it opens the port).
+- **Screen and sensors on the M5StickC PLUS2.** `st7789.py`: a small ST7789 driver (landscape
+  240×135) that pushes only changed rows, with cached large-text glyphs. `sensors.py`: MPU6886
+  accelerometer, gyroscope and die temperature; BM8563 clock; battery voltage; buttons A, B, C.
+  The screen shows clock, tilt, acceleration, rotation, IMU temperature, battery, link state, the
+  waiting task with its A/B prompt, and the last outcome. Button C toggles the backlight.
+  `deploy.py` copies the new files and sets the clock from the PC; it reports a busy port instead
+  of a traceback. Checked on the device: flat stick read 1.01 g and 2.5° tilt, battery 4.16 V on
+  USB, clock correct; 10 frames sent back to back with no gap all arrived while the screen redrew.
+  Found on the device and fixed: 40 MHz SPI on the screen's pins crashed the firmware in a boot
+  loop (the limit on those pins is 26.7 MHz; it now uses 20 MHz). The microphone isn't read
+  (no PDM input in MicroPython on the ESP32).
 - **Verified on the device** (2026-09-17): `agent://m5-96c048` through `run_gateway.py --serial COM4`.
   Its outcomes moved topic `tilt_risk` and the verify rule, up on A and down on B, as the model says.
   Found on the device and fixed: frames ignored after the port was reopened (both sides now parse
@@ -241,6 +252,7 @@ up across a process boundary.
   control of its devices.
 - An edge outcome is a button press; nothing checks the tilt was real. The M5 link is USB serial,
   not ESP-NOW, and the device's small input buffer can still lose a task in a burst.
+- The M5's readings are only displayed; none reach Alice, so no sensor has an opinion yet.
 - Trust exists only in the node's database; lose the file and every rule and topic opinion
   starts over.
 - Logged values are rounded but stances aren't: a rule printed `value=+1.50 stance=leaning_trusted`
