@@ -13,6 +13,7 @@ has run with three nodes on one machine and across two: a Windows PC and an Andr
 over Wi-Fi. An M5StickC PLUS2 takes part as an edge device: it runs only the stripped protocol, and
 a gateway on the PC signs for it.
 Read [the good, the bad, and the ugly](#the-good-the-bad-and-the-ugly) before building on it.
+[ONE_PAGER.md](ONE_PAGER.md) sums it all up on one page.
 
 ## Why capsules
 
