@@ -200,9 +200,9 @@ sqlite3 store/alice.db "SELECT json_extract(capsule, '$.semantics.claims[0].stat
   (`replay: capsule … was already received`) and closed that session. A capsule Bob sent before
   the SQLite migration was also rejected when replayed against the migrated ledger.
 - **Two machines (2026-09-17):** Alice on a Windows 11 PC (`--host 0.0.0.0`), `agent://phone` on an
-  Android phone in Termux, over the phone's Wi-Fi hotspot. Round trips took 15–34 ms. The phone's clock
-  ran about 1.0–1.2 s behind the PC's, shown in Alice's "since created" times (the phone measured
-  its own cycles at 15–34 ms).
+  Android phone in Termux, over the phone's Wi-Fi hotspot. Round trips took 15–34 ms, measured on the phone. The phone's
+  clock ran about 1.0–1.2 s behind the PC's; once both logged offsets, Alice reported
+  `clock offset -1.0 s` and the phone `+1.0 s`, the same gap from either side.
   - First contact pinned both keys; every later run from the phone matched its pin.
   - A byte-identical replay from the phone was rejected and the session closed.
   - Success moved the topic opinion and rule up by 0.1; failure moved both down by 0.2 and added
@@ -214,8 +214,10 @@ sqlite3 store/alice.db "SELECT json_extract(capsule, '$.semantics.claims[0].stat
     the same Alice process after a silent drop wasn't directly observed.
   - The phone and a PC client (`agent://bob`) had open sessions at the same time; Bob's whole
     session ran while the phone's was waiting, and each got its own ACK and task.
-  - Rule trust and topic opinions survived an Alice restart and kept learning (rule at +1.50,
-    weight 19.97, 13 outcomes).
+  - Rule trust and topic opinions survived Alice restarts and kept learning.
+    `verify-high-confidence-risk` became the first rule to reach `trusted`, earned from outcomes
+    reported by Bob, Carol and the phone: +1.70, weight 21.97, 16 outcomes. Topic
+    `supply_chain_risk` reached +1.60.
 
 ### Tests
 
@@ -418,6 +420,9 @@ your own evidence count and decay clock. Never store it as your opinion.
 
 ### The ugly — will bite you without warning
 
+- **Logged values are rounded, stances aren't.** Alice decays an opinion before each outcome, so a
+  value can sit just under a stance boundary and still print as that boundary: the rule once showed
+  `value=+1.50 stance=leaning_trusted`, where `trusted` starts at exactly 1.5.
 - **`SocketTransport.recv` on its own trusts the sender's label.** It returns the envelope's
   self-declared `pubkey_id`. `Peer.recv` does the checking; call the transport directly
   and you get none of it.

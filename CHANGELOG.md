@@ -5,8 +5,9 @@ Each release lists what changed, then an honest verdict: the good, the bad, and 
 ## [Unreleased]
 
 Since v0.1: several nodes over TCP, identity, replay protection, a SQLite ledger,
-self-description capsules, rules that learn from outcomes, and fixes for bugs that only showed up
-across a process boundary.
+self-description capsules, rules that learn from outcomes, persisted topic opinions, asserting
+kernel tests, a first run across two machines (PC ↔ phone), and fixes for bugs that only showed
+up across a process boundary.
 
 ### Added
 
@@ -25,7 +26,9 @@ across a process boundary.
   Android phone in Termux, over Wi-Fi. Covered: first-contact pinning, pin matches on restart,
   replay rejection, success and failure outcomes, client killed mid-session, silent network drop
   (Alice timed out after 30 s and kept serving), overlapping sessions from the phone and the PC,
-  and trust surviving an Alice restart. The phone's clock was about 1 s behind the PC's.
+  and trust surviving an Alice restart. The phone's clock was 1.0 s behind the PC's, logged as
+  `-1.0 s` by Alice and `+1.0 s` by the phone. `verify-high-confidence-risk` became the first
+  rule to reach `trusted` (+1.70, weight 21.97, 16 outcomes from three agents on two machines).
 - Both run scripts log the peer's clock offset on every hello. `run_bob.py` exits quietly on Ctrl+C.
 - **Asserting tests for the kernel and the law.** `tests/test_weight.py` (14, was a print script),
   `tests/test_validator.py` (13), `tests/test_interpreter.py` (13, including merge),
@@ -184,10 +187,14 @@ across a process boundary.
   source so the description can't drift, with every test file passing when last described.
 - Rules are behavior as signed capsules: their outputs explain themselves, and their trust moves
   only on outcomes reported by the agent that did the work, counted once.
+- The same code ran unchanged on Windows and on Android (Termux): signed sessions, pinning, replay
+  rejection, learning, dropped connections and overlapping sessions all behaved as on one machine.
+- The kernel and the decay law have asserting tests, and the first of them found a real bug
+  (decay counted twice on repeated ticks).
 
 ### The bad
 
-- Only ever run on one machine, in a star; no relaying, no queue for offline agents.
+- Still a star, now across two machines: no relaying, no queue for offline agents.
 - Trust on first use trusts whoever arrives first; no registry, no key rotation.
 - SQLite files are ~1.3× the old JSON Lines size, and nothing prunes on a schedule.
 - Two machines checked by hand on one Wi-Fi hotspot only: no NAT, no lossy links, no automated test.
@@ -207,7 +214,10 @@ across a process boundary.
 - `demo.py` crashes with `UnicodeEncodeError` on `→` when stdout is cp1252 (Git Bash pipes on
   Windows). PowerShell and file redirection are fine.
 - Edge devices can't report outcomes: an edge `task_result` has no outcome field and is refused.
-- Rule trust exists only in the node's database; lose the file and every rule starts over.
+- Trust exists only in the node's database; lose the file and every rule and topic opinion
+  starts over.
+- Logged values are rounded but stances aren't: a rule printed `value=+1.50 stance=leaning_trusted`
+  because its value was just under the 1.5 boundary.
 
 ## [v0.1] — 2026-09-16
 
