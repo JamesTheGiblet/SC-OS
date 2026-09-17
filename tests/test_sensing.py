@@ -104,6 +104,15 @@ def test_physical_range_from_description_wins():
     assert verdict(v, "accel") is False
 
 
+def test_sensor_without_dedicated_check_passes_on_range_alone():
+    description = {"tof": {"min": 0.0, "max": 2000.0}, "accel": {"min": -2.0, "max": 2.0}}
+    assert verdict(check({"tof": 234.0}, T0, None, description), "tof") is True
+    assert verdict(check({"tof": 2500.0}, T0, None, description), "tof") is False
+    assert "tof" not in check({"tof": 234.0}, T0)                          # no description: no verdict
+    moving = check(still(accel=(0.8, 0.0, 1.6), gyro=(120.0, 0.0, 0.0)), T0, None, description)
+    assert "accel" not in moving                                            # dedicated checks aren't bypassed
+
+
 # --- readings capsule -------------------------------------------------------
 
 def test_readings_frame_and_capsule():

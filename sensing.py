@@ -24,6 +24,8 @@ Checks (a sensor gets no verdict when its check can't apply):
 - imu_temp, chip_temp   change no faster than 0.5 C per second
 - battery    3.0..4.5 V, and no jump over 0.3 V between readings
 - clock      within 120 s of when the reading capsule was created
+- others     (e.g. tof) inside the physical range; the weakest evidence, used only for sensors
+             with no dedicated check
 """
 
 from __future__ import annotations
@@ -49,6 +51,7 @@ TEMP_RATE_C_PER_S = 0.5
 BATTERY_V = (3.0, 4.5)
 BATTERY_JUMP_V = 0.3
 CLOCK_TOLERANCE_S = 120.0
+DEDICATED = ("accel", "gyro", "tilt", "imu_temp", "chip_temp", "battery", "clock")
 
 
 def _mag(v) -> float:
@@ -81,7 +84,7 @@ def check(readings: dict, created: datetime, previous: tuple[dict, datetime] | N
     def ok(sid, why):
         verdicts.setdefault(sid, (True, why))       # a failure already recorded wins
 
-    # range, from the description
+    # range, from the description; sensors with no dedicated check pass on it alone
     for sid, value in readings.items():
         d = description.get(sid)
         if d is None or isinstance(value, str):
@@ -89,6 +92,8 @@ def check(readings: dict, created: datetime, previous: tuple[dict, datetime] | N
         values = value if isinstance(value, tuple) else (value,)
         if any(not d["min"] <= v <= d["max"] for v in values):
             fail(sid, f"outside physical range {d['min']:g}..{d['max']:g}")
+        elif sid not in DEDICATED:
+            ok(sid, f"inside physical range {d['min']:g}..{d['max']:g}")
 
     accel, gyro = readings.get("accel"), readings.get("gyro")
     if isinstance(accel, tuple) and isinstance(gyro, tuple):

@@ -351,10 +351,20 @@ def firmware_description():
     return found["DESCRIPTION"], found["ABSENT"]
 
 
+def test_firmware_tof_description_is_accepted():
+    import ast
+    from edge.sensors import validate_sensor_list
+    tree = ast.parse((ROOT / "firmware" / "m5stickc_plus2" / "sensors.py").read_text(encoding="utf-8"))
+    tof = next(ast.literal_eval(n.value) for n in tree.body
+               if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "TOF_DESCRIPTION")
+    description, _ = firmware_description()
+    validate_sensor_list({"src": "m5-00aa11", "sensors": list(description) + [tof]})
+
+
 def test_firmware_files_compile():
     """MicroPython can't run here, but every firmware file must at least be valid Python."""
     files = sorted((ROOT / "firmware" / "m5stickc_plus2").glob("*.py"))
-    assert {f.name for f in files} >= {"main.py", "sctalk.py", "sensors.py", "st7789.py", "deploy.py"}
+    assert {f.name for f in files} >= {"main.py", "sctalk.py", "sensors.py", "st7789.py", "vl53l0x.py", "deploy.py"}
     for f in files:
         compile(f.read_text(encoding="utf-8"), str(f), "exec")
 

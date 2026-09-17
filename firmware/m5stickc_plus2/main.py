@@ -98,7 +98,7 @@ class Screen:
         self.rows = tft.Lines(self.d)
         self.between_rows = between_rows
 
-    def draw(self, name, hms, tilt, accel, gyro, temp, chip, volts, armed, link, task, last, report_deg):
+    def draw(self, name, hms, tilt, accel, gyro, temp, chip, volts, tof, armed, link, task, last, report_deg):
         def put(*args, **kw):
             if self.rows.put(*args, **kw):
                 self.between_rows()
@@ -115,16 +115,14 @@ class Screen:
             put("env", 60, 11, "imu %4.1fC cpu %3dC  %4.2fV" % (temp, chip, volts), tft.WHITE)
         else:
             put("env", 60, 11, "cpu %3dC  bat %4.2fV" % (chip, volts), tft.WHITE)
-        put("link", 72, 11, link, tft.GREY)
+        put("tof", 72, 11, tof, tft.CYAN)
+        put("link", 86, 11, link, tft.GREY)
         if task:
-            lines = wrap(task, 29)[:2]
-            put("task1", 86, 11, lines[0], tft.BLACK, tft.YELLOW)
-            put("task2", 97, 11, lines[1] if len(lines) > 1 else "", tft.BLACK, tft.YELLOW)
-            put("task3", 108, 11, "A = yes          B = no", tft.BLACK, tft.YELLOW)
+            put("task1", 97, 11, wrap(task, 29)[0], tft.BLACK, tft.YELLOW)
+            put("task2", 108, 11, "A = yes          B = no", tft.BLACK, tft.YELLOW)
         else:
-            put("task1", 86, 11, "", tft.BLACK)
-            put("task2", 97, 11, "tilt past %d deg to report" % report_deg, tft.GREY)
-            put("task3", 108, 11, "", tft.BLACK)
+            put("task1", 97, 11, "tilt past %d deg to report" % report_deg, tft.GREY)
+            put("task2", 108, 11, "", tft.BLACK)
         colour = tft.GREEN if last.startswith("sent success") else (
             tft.RED if last.startswith("sent failure") else tft.GREY)
         put("last", 122, 13, last, colour)
@@ -139,10 +137,13 @@ def main():
     sender = ReadingSender()
     tz = tz_offset_minutes()
     overrides = load_overrides()
-    description, error = apply_setup(list(sensor_info.DESCRIPTION), overrides)
+    base = list(sensor_info.DESCRIPTION) + ([sensor_info.TOF_DESCRIPTION] if sensors.tof else [])
+    ids = [d["id"] for d in base]
+    description, error = apply_setup(base, {k: v for k, v in overrides.items() if k in ids})
     if error:                               # a saved setup that no longer fits: back to defaults
         note("saved setup ignored: " + error)
-        description, overrides = list(sensor_info.DESCRIPTION), {}
+        description, overrides = base, {}
+    note("tof: " + ("VL53L0X on grove 32/33" if sensors.tof else "not connected"))
     report_deg, rearm_deg = tilt_thresholds(description)
     poll = select.poll()
     poll.register(sys.stdin, select.POLLIN)
@@ -243,7 +244,9 @@ def main():
                     armed = True
             clock = sensors.clock() if sensors.rtc_ok else None
             chip, volts = sensors.chip_celsius(), sensors.battery_volts()
-            screen.draw(name, local_hms(clock, tz) if clock else None, tilt, accel, gyro, temp, chip, volts,
+            mm = sensors.distance_mm()
+            tof = ("tof %4d mm" % mm) if mm is not None else ("tof  no target" if sensors.tof else "tof  not connected")
+            screen.draw(name, local_hms(clock, tz) if clock else None, tilt, accel, gyro, temp, chip, volts, tof,
                         armed, link, talk.task["s"] if talk.task else None, last, report_deg)
 
             # readings for Alice's plausibility checks, when they change or once a minute
@@ -253,6 +256,8 @@ def main():
                                "tilt": round(tilt, 1), "imu_temp": round(temp, 1)})
             if clock:
                 values["clock"] = iso_utc(clock)
+            if mm is not None:
+                values["tof"] = mm
             now_ms = time.ticks_ms()
             if sender.due(values, now_ms):
                 talk.readings(values)

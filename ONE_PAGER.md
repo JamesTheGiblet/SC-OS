@@ -23,7 +23,7 @@ The kernel runs on full Python. Small devices speak a stripped format, and a gat
 
 ## What has been demonstrated
 
-One rule, `verify-high-confidence-risk`, has earned trust from four agents on real hardware: Bob, Carol, a phone and an M5StickC PLUS2. It reached the +2.0 maximum on successes and dropped on failures exactly as the model predicts. All 161 tests pass.
+One rule, `verify-high-confidence-risk`, has earned trust from four agents on real hardware: Bob, Carol, a phone and an M5StickC PLUS2. It reached the +2.0 maximum on successes and dropped on failures exactly as the model predicts. All 163 tests pass.
 
 | Area | Shown by |
 | --- | --- |
@@ -31,7 +31,7 @@ One rule, `verify-high-confidence-risk`, has earned trust from four agents on re
 | Two machines | Windows PC ↔ Android phone in Termux over Wi-Fi: pinning, replay rejection, dropped connections, overlapping sessions; clock offset measured as −1.0 s / +1.0 s from each side |
 | Learning rules | Rules are signed capsules; outcomes move their trust only when reported by the agent that did the task, counted once; trust survives restarts |
 | Edge device | M5StickC PLUS2 on MicroPython: tilt report → Alice's rule → task on its screen → button A/B → outcome counted |
-| Sensor descriptions | The stick describes 8 sensors; the gateway builds a signed `__sensors__` capsule with margins as evidence; Alice stores it |
+| Sensor descriptions | The stick describes 9 sensors, including a VL53L0X distance sensor added on its Grove port; the gateway builds a signed `__sensors__` capsule with margins as evidence; Alice stores it |
 | Sensor trust | The stick sends readings; Alice checks them for physical plausibility herself and each sensor earns its own opinion (all seven readable sensors judged plausible on the device) |
 | Operator setup | A setup file (tilt 30°, battery 3.5–4.3 V) was issued while the stick ran, delivered as a signed task, applied, confirmed by the stick's new description, and kept across a reboot |
 | The law | Asserting tests for decay, trajectories and sharing; they found a real bug (decay counted twice) that was fixed |

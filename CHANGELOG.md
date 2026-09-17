@@ -56,6 +56,16 @@ up across a process boundary.
   USB, clock correct; 10 frames sent back to back with no gap all arrived while the screen redrew.
   Found on the device and fixed: 40 MHz SPI on the screen's pins crashed the firmware in a boot
   loop (the limit on those pins is 26.7 MHz; it now uses 20 MHz).
+- **Time-of-flight distance sensor on the M5.** A VL53L0X (CJMCU V2 board) on the Grove port (SDA
+  32, SCL 33). `firmware/m5stickc_plus2/vl53l0x.py` ports Pololu's initialisation (SPAD setup, tuning
+  table, timing budget, VHV and phase calibration) with continuous, non-blocking reads. The stick
+  detects it at boot and only then adds `tof` (0–2000 mm, margins 50–1200 mm) to its description;
+  distance is sent as a reading when something is in range and shown on a new screen row. Setup
+  overrides for sensors not present are ignored instead of resetting the rest. Alice: sensors with
+  no dedicated check (`tof`) earn trust from staying inside their physical range. Verified: the
+  stick described 9 sensors, readings of 144 and 122 mm reached Alice, and `sensor:m5-96c048/tof`
+  formed; distances followed a hand on the screen. First readings were all 8190 (status 6, weak
+  signal) with nothing close enough in front. 163 tests.
 - **Operator setup** (target design 8). `provision.py issue <file>` checks a setup (margins and
   `sample_ms` per sensor) against the device's `__sensors__` description and stores it as a signed
   `__setup__` task from Alice; `provision.py show` lists each device's latest setup as applied or
@@ -293,6 +303,7 @@ up across a process boundary.
   not ESP-NOW, and the device's small input buffer can still lose a task in a burst.
 - Plausibility checks catch impossible readings, not a sensor that is steadily wrong; thresholds
   are tuned for the M5.
+- The ToF sensor earns trust only from staying in range, and its accuracy was checked by hand.
 - Setups are signed by the node's key (no separate operator identity), accumulate on the device,
   and reach it only while it reports.
 - A still M5 adds about 3,500 readings capsules a day; its sensor description expires after a day,

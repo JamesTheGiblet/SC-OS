@@ -1,7 +1,8 @@
 """
 The M5StickC PLUS2's sensors: IMU (MPU6886: accelerometer, gyroscope, die
 temperature), real-time clock (BM8563), battery voltage, the ESP32's own
-temperature sensor, and the three buttons. Also the buzzer, the one sound output.
+temperature sensor, the three buttons, and a VL53L0X time-of-flight distance
+sensor on the Grove port when one is connected. Also the buzzer, the one sound output.
 
 Not read: the SPM1423 PDM microphone (clock 0, data 34). It answers when clocked,
 but MicroPython's I2S has no PDM input on the ESP32, and counting its data edges
@@ -41,6 +42,10 @@ DESCRIPTION = (
     {"id": "buttons", "type": "buttons", "bus": "gpio", "pin": "37,39,35", "unit": "pressed",
      "min": 0, "max": 1, "margin_low": 0, "margin_high": 1, "sample_ms": 20},
 )
+# Added to the description only when the sensor answers at boot.
+TOF_DESCRIPTION = {"id": "tof", "type": "distance", "bus": "i2c1:0x29", "pin": "32,33", "unit": "mm",
+                   "min": 0, "max": 2000, "margin_low": 50, "margin_high": 1200, "sample_ms": 200}
+
 ABSENT = (
     "mic: SPM1423 PDM on pins 0,34; MicroPython has no PDM input",
     "chip_temp: large fixed offset; trend only",
@@ -69,6 +74,33 @@ class Sensors:
         self.buttons = {"A": Pin(37, Pin.IN), "B": Pin(39, Pin.IN), "C": Pin(35, Pin.IN)}
         self.imu_ok = self._imu_init()
         self.rtc_ok = RTC in self.i2c.scan()
+        self.tof = self._tof_init()
+        self.tof_mm = None                               # last distance; None: no target or no sensor
+
+    def _tof_init(self):
+        """VL53L0X on the Grove port (SDA 32, SCL 33), if one is connected."""
+        try:
+            from vl53l0x import VL53L0X
+            grove = I2C(1, scl=Pin(33), sda=Pin(32), freq=400000)
+            if 0x29 not in grove.scan():
+                return None
+            tof = VL53L0X(grove)
+            tof.start()
+            return tof
+        except Exception:
+            return None
+
+    def distance_mm(self):
+        """Latest distance in mm, None when nothing is in range. Doesn't wait for the sensor."""
+        if self.tof is None:
+            return None
+        try:
+            mm = self.tof.read()
+        except OSError:
+            return self.tof_mm
+        if mm is not None:
+            self.tof_mm = mm if mm < 8190 else None
+        return self.tof_mm
 
     def _imu_init(self):
         try:
@@ -125,7 +157,8 @@ class ReadingSender:
 
     MIN_INTERVAL_MS = 5000
     HEARTBEAT_MS = 25000                  # under the master's 30 s idle timeout, so the session stays open
-    DEADBAND = {"accel": 0.05, "gyro": 20, "tilt": 5, "imu_temp": 1.0, "chip_temp": 1.0, "battery": 0.05}
+    DEADBAND = {"accel": 0.05, "gyro": 20, "tilt": 5, "imu_temp": 1.0, "chip_temp": 1.0, "battery": 0.05,
+                "tof": 20}
 
     def __init__(self):
         self.sent = None
