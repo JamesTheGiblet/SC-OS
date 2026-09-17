@@ -269,6 +269,9 @@ Without the cap, readings every 25 s would drive every opinion to the maximum wi
 
 ### An M5StickC PLUS2 as the edge device
 
+[docs/WIRING.md](docs/WIRING.md) has the wiring diagram: power rails, the I2C bus, the edge
+sensors and the servo channels.
+
 `firmware/m5stickc_plus2/` runs on the stick under MicroPython, over USB serial to the gateway.
 Tilt it past its tilt margin (40° by default): it reports `tilt_risk` as a threshold, Alice's verify rule sends a task back,
 and the red LED blinks. Press **A** (front) if the tilt was real, **B** (side) if not; the outcome

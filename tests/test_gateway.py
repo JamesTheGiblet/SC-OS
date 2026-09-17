@@ -366,7 +366,7 @@ def test_firmware_optional_sensor_descriptions_are_accepted():
 def test_firmware_files_compile():
     """MicroPython can't run here, but every firmware file must at least be valid Python."""
     files = sorted((ROOT / "firmware" / "m5stickc_plus2").glob("*.py"))
-    assert {f.name for f in files} >= {"main.py", "sctalk.py", "sensors.py", "st7789.py", "vl53l0x.py", "deploy.py"}
+    assert {f.name for f in files} >= {"main.py", "sctalk.py", "sensors.py", "st7789.py", "vl53l0x.py", "pca9685.py", "deploy.py"}
     for f in files:
         compile(f.read_text(encoding="utf-8"), str(f), "exec")
 

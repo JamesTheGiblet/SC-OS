@@ -18,7 +18,7 @@ from pathlib import Path
 import serial
 
 HERE = Path(__file__).resolve().parent
-FILES = ("sctalk.py", "st7789.py", "vl53l0x.py", "sensors.py", "main.py")      # main.py last: it starts on reset
+FILES = ("sctalk.py", "st7789.py", "vl53l0x.py", "pca9685.py", "sensors.py", "main.py")      # main.py last: it starts on reset
 CHUNK = 256
 
 
