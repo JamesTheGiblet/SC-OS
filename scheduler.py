@@ -144,12 +144,11 @@ class Scheduler:
             op = self.record_outcome(topic, success)
             self.learned.append(f"topic {topic}: {c.outcome.status} -> value={op.value:+.2f}")
             if self.rules is not None:
-                learned = self.rules.record_rule_outcome(task, success)
-                if learned:
-                    rule_id, rop = learned
+                for rule_id, rop, share in self.rules.record_rule_outcome(task, success):
+                    credit = "" if share == 1.0 else f" (share {share:.2f}, further back in the chain)"
                     self.learned.append(f"rule {rule_id[-12:]}: {c.outcome.status} -> "
                                         f"value={rop.value:+.2f} weight={rop.weight:.2f} "
-                                        f"stance={rop.stance}")
+                                        f"stance={rop.stance}{credit}")
         return (self._ack(c),)
 
     def _task_answered_by(self, c: Capsule) -> dict | None:

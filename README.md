@@ -105,6 +105,13 @@ holds a JSON spec: a `when` pattern over incoming capsules and the capsules to e
   answers a task this node sent, comes from the agent it was sent to, and hasn't been counted
   before. It moves the rule's opinion (+0.1 and weight 1 for success, −0.2 and weight 3 for
   failure). A rule whose value falls to 0 or below stops firing.
+- **Rules chain, and share the credit.** A rule may fire on this node's own rule outputs, so one
+  rule's task can trigger another. A chain is at most 2 rule steps (`max_depth`), a rule never fires
+  on a capsule its own chain produced, and nothing else the node sends triggers its rules. When an
+  outcome arrives, the rule that emitted the task takes it in full and each step further back takes
+  half of the one after it (`CREDIT_SHARE`): a smaller value step and less weight, so an assist
+  counts for less than the shot. On a chained input, `{from}` is this node, so address the next step
+  with `{to}`.
 - **A rule lives as long as its trust.** `maintain()` re-issues live rules before their 7-day
   capsule TTL runs out. A tested rule is forgotten once its decayed weight falls below 0.05; an
   untested rule gets 30 days. Forgotten rules stay forgotten across restarts unless issued with
@@ -424,7 +431,7 @@ sqlite3 store/alice.db "SELECT json_extract(capsule, '$.semantics.claims[0].stat
 python tests/test_store.py          # 15: round-trip, signatures, find, pruning and disk space, import, concurrent writers
 python tests/test_transport.py      # 9:  framing, many peers at once, concurrent sends (real localhost TCP)
 python tests/test_peer.py           # 17: pinning, rejections, replay, session binding, concurrent sessions
-python tests/test_rules.py          # 26: patterns, firing and provenance, own rules only, outcomes, lifetime, families and arbitration
+python tests/test_rules.py          # 32: patterns, firing and provenance, own rules only, outcomes, lifetime, families and arbitration
 python tests/test_self_describe.py  # 6:  valid capsules, every file described, versions chain, rerun stores nothing
 python tests/test_weight.py         # 14: the curve, success/failure/idle trajectories, stepwise ticks, sharing rule, domains
 python tests/test_validator.py      # 13: every rejection code: schema, version, clock skew, vocab, coherence, provenance, outcome
@@ -434,7 +441,7 @@ python tests/test_network.py        # 6:  peers.json, clock offset, any working 
 python tests/test_gateway.py        # 13: edge outcome fields, device outcome teaches Alice's rule, rejections, session drop, firmware protocol, sensor lists
 python tests/test_sensing.py        # 13: each plausibility check, one outcome per window, scheduler observers, readings through the gateway
 python tests/test_provision.py      # 9:  setup checks, issuing, resending until applied, firmware applying, the whole loop
-python -m pytest tests              # all 170
+python -m pytest tests              # all 176
 ```
 
 ## What a capsule looks like
@@ -614,8 +621,9 @@ your own evidence count and decay clock. Never store it as your opinion.
 - **An outcome is the worker's word.** A rule learns from what the agent asked to do the task
   reports. Alice checks that the report comes from that agent and counts it once, but can't check
   that it's true: an agent that always reports success makes a bad rule look good.
-- **Rules don't chain.** A rule never fires on another rule's output. That prevents loops, but
-  multi-step reasoning needs a person or agent in between.
+- **Chains are short and credit is a guess.** Two rule steps, and each step back earns half the
+  credit of the one after it. Both numbers were chosen, not derived: nothing yet shows that a
+  three-step chain would be useful or that a half share is right.
 - **Nothing proposes rules.** `vary` sweeps a parameter you choose, on a rule you wrote. The system
   selects among variants but never invents one, so no behaviour appears that you didn't specify.
 - **A silenced rule isn't forgotten.** Failures add weight, and weight keeps a rule alive, so a

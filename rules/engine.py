@@ -22,16 +22,24 @@ Placeholders: {from} {to} {topic} {id} {claim} (the most confident claim)
 derived_from = (rule id, input id), so any output answers "why does this exist?".
 
 Firing
-    A rule fires on a capsule addressed to the owner, not sent by the owner, and
-    not itself a rule output (so rules can't chain into loops), while the rule's
-    value is above 0 (unknown, unclear and trusted rules fire; wary and distrusted
-    don't). The same rule fires at most once per input: output ids are derived
-    from (rule, input, position) and the ledger is checked.
+    A rule fires on a capsule addressed to the owner, not sent by the owner, while
+    the rule's value is above 0 (unknown, unclear and trusted rules fire; wary and
+    distrusted don't). The same rule fires at most once per input: output ids are
+    derived from (rule, input, position) and the ledger is checked.
+
+Chaining
+    A rule may fire on this node's own rule outputs, so behaviour can build on
+    behaviour, bounded three ways: a chain is at most `max_depth` rule steps long
+    (2 by default), a rule never fires on a capsule its own chain produced (no
+    A->A or A->B->A), and identical outputs are already blocked by their derived
+    ids. Nothing else the node sends can trigger its rules.
 
 Learning
     When a task_result with an outcome answers a rule's output, sent by the agent
-    the output went to, the scheduler hands it here once per task. The rule's
-    opinion decays to now, then observes success or failure.
+    the output went to, the scheduler hands it here once per task. The rule that
+    emitted the task decays to now, then observes the outcome in full. Rules
+    further back in the chain share the credit, each step worth CREDIT_SHARE of
+    the one after it: an assist counts, but less than the shot.
 
 Lifetime (tied to Leighton Weight)
     maintain() re-issues an active rule's capsule before its 7-day TTL runs out,
@@ -88,6 +96,8 @@ MAX_SPEC_CHARS = 2000
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 FAMILY_SEP = "--"                         # "verify-risk--conf80" is a variant of "verify-risk"
 EXPLORE = 0.2                             # how often a family tries a less tested variant
+MAX_DEPTH = 2                             # rule steps allowed in one chain
+CREDIT_SHARE = 0.5                        # each step back up the chain earns this much of the next
 ID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "https://semantic-capsule.dev/sc-os/rules")
 
 EMIT_KEYS = {"intent", "to", "trigger", "topic", "claims", "ttl_seconds", "priority", "requires_ack"}
@@ -150,13 +160,15 @@ class Rule:
 
 class RuleEngine:
     def __init__(self, owner: str, store: Store, key: Ed25519PrivateKey,
-                 explore: float = EXPLORE, rng: random.Random | None = None):
+                 explore: float = EXPLORE, rng: random.Random | None = None,
+                 max_depth: int = MAX_DEPTH):
         self.owner = owner
         self.store = store
         self.key = key
         self.public_key = key.public_key()
         self.problems: list[str] = []          # rules skipped at load, outputs that failed validation
         self.explore = explore                 # chance a family tries a less tested variant
+        self.max_depth = max_depth             # rule steps allowed in one chain
         self.rng = rng or random.Random()
         self.choices: list[str] = []           # what arbitration picked, most recent last
 
@@ -248,16 +260,38 @@ class RuleEngine:
     # --- firing ---
 
     def evaluate(self, c: Capsule, now: datetime | None = None) -> list[Capsule]:
-        """Capsules emitted by every rule that fires on c."""
+        """
+        Capsules emitted by the rules that fire on c, and then by the rules that
+        fire on those, up to max_depth steps.
+        """
         now = now or datetime.now(timezone.utc)
-        if c.receiver != self.owner or c.sender == self.owner or c.provenance.method == "rule":
+        produced: list[Capsule] = []
+        in_flight: dict[str, dict] = {}                  # emitted but not yet in the ledger
+        queue = [to_wire(c)]
+        while queue:
+            wire = queue.pop(0)
+            for emitted in self._fire_on(wire, now, in_flight):
+                produced.append(emitted)
+                in_flight[emitted.id] = to_wire(emitted)
+                queue.append(in_flight[emitted.id])
+        return produced
+
+    def _fire_on(self, wire: dict, now: datetime, in_flight: dict) -> list[Capsule]:
+        """One step: the rules that fire on this capsule, arbitrated per family."""
+        own_rule_output = wire["from"] == self.owner and wire["provenance"]["method"] == "rule"
+        if not own_rule_output and (wire["to"] != self.owner or wire["from"] == self.owner):
             return []
+        depth, ancestry = self.chain(wire, in_flight)
+        if depth >= self.max_depth:
+            return []
+        c = from_wire(wire)
         out: list[Capsule] = []
         for rule in self.arbitrate([r for r in self.rules(now)
-                                    if _fires(r.opinion) and matches(r.when, c)]):
+                                    if _fires(r.opinion) and r.id not in ancestry
+                                    and matches(r.when, c)]):
             for i, template in enumerate(rule.then):
                 out_id = f"urn:uuid:{uuid.uuid5(ID_NAMESPACE, f'{rule.id}|{c.id}|{i}')}"
-                if self.store.find(capsule_id=out_id):
+                if self.store.find(capsule_id=out_id) or out_id in in_flight:
                     continue
                 try:
                     emitted = self._emit(rule, template, c, out_id, now)
@@ -287,6 +321,29 @@ class RuleEngine:
                                                description or f"variant of {name}: {path}={label}",
                                                force=force, now=now)))
         return issued
+
+    def chain(self, capsule: dict, in_flight: dict | None = None) -> tuple[int, list[str]]:
+        """
+        (rule steps behind this capsule, the rules that made them, nearest first).
+        A capsule nothing rule-made is (0, []). in_flight holds capsules emitted in
+        this pass, which aren't in the ledger yet.
+        """
+        in_flight = in_flight or {}
+        depth, ancestry, seen = 0, [], set()
+        while capsule is not None and capsule.get("provenance", {}).get("method") == "rule":
+            parents = capsule["provenance"].get("derived_from") or []
+            if not parents or parents[0] in seen:
+                break
+            seen.add(parents[0])
+            ancestry.append(parents[0])
+            depth += 1
+            parent_id = parents[1] if len(parents) > 1 else None
+            if parent_id in in_flight:
+                capsule = in_flight[parent_id]
+            else:
+                records = self.store.find(capsule_id=parent_id) if parent_id else []
+                capsule = records[-1]["capsule"] if records else None
+        return depth, ancestry
 
     def arbitrate(self, matching: list["Rule"]) -> list["Rule"]:
         """One rule per family: the most trusted, or now and then a less tested variant."""
@@ -335,30 +392,35 @@ class RuleEngine:
     # --- learning ---
 
     def record_rule_outcome(self, task: dict, success: bool,
-                            now: datetime | None = None) -> tuple[str, Opinion] | None:
+                            now: datetime | None = None) -> list[tuple[str, Opinion, float]]:
         """
-        Feed a task's outcome to the rule that emitted it. `task` is the wire form of
-        the capsule the outcome answers. The caller checks who reported it and that
-        it is counted once. Returns (rule id, updated opinion) or None.
+        Feed a task's outcome to the rule that emitted it, and a share of it to the
+        rules whose outputs led there. `task` is the wire form of the capsule the
+        outcome answers; the caller checks who reported it and counts it once.
+        Returns (rule id, updated opinion, share) per rule credited, nearest first.
         """
         now = now or datetime.now(timezone.utc)
-        provenance = task.get("provenance", {})
-        if task.get("from") != self.owner or provenance.get("method") != "rule":
-            return None
-        parents = provenance.get("derived_from") or []
-        if not parents:
-            return None
-        key = f"rule:{parents[0]}"
-        row = self.store.get_opinion(key)
-        if row is None or row["status"] != "active":
-            return None
+        if task.get("from") != self.owner or task.get("provenance", {}).get("method") != "rule":
+            return []
+        credited = []
+        share = 1.0
+        for rule_id in self.chain(task)[1]:
+            row = self.store.get_opinion(f"rule:{rule_id}")
+            if row is not None and row["status"] == "active":
+                credited.append((rule_id, self._credit(rule_id, row, success, share, now), share))
+            share *= CREDIT_SHARE
+        return credited
+
+    def _credit(self, rule_id: str, row: dict, success: bool, share: float, now: datetime) -> Opinion:
+        """Observe an outcome worth `share` of a full one: smaller step, less weight."""
         opinion = _opinion(row)
         opinion.tick(now=now)                  # decay to now, then learn; last_tested resets
-        opinion.observe(success=success, now=now)
-        self.store.put_opinion(key, value=opinion.value, weight=opinion.weight,
+        opinion.observe(success=success, now=now, success_step=0.1 * share, failure_step=0.2 * share,
+                        success_weight=1.0 * share, failure_weight=3.0 * share)
+        self.store.put_opinion(f"rule:{rule_id}", value=opinion.value, weight=opinion.weight,
                                evidence_count=opinion.evidence_count,
                                last_tested=now.isoformat(), status="active")
-        return parents[0], opinion
+        return opinion
 
     # --- lifetime ---
 

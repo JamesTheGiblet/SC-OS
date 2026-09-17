@@ -56,6 +56,17 @@ up across a process boundary.
   USB, clock correct; 10 frames sent back to back with no gap all arrived while the screen redrew.
   Found on the device and fixed: 40 MHz SPI on the screen's pins crashed the firmware in a boot
   loop (the limit on those pins is 26.7 MHz; it now uses 20 MHz).
+- **Rules chain, and share the credit** (composition and credit over time). `RuleEngine.evaluate`
+  now works through a queue: the rules that fire on a capsule, then the rules that fire on those
+  outputs, up to `max_depth` (2) rule steps. A rule may fire on this node's own rule outputs, never
+  on a capsule its own chain produced, and nothing else the node sends triggers its rules.
+  `chain(capsule)` returns the steps behind a capsule and the rules that made them.
+  `record_rule_outcome` now credits every rule in that chain: the one that emitted the task in full,
+  each step further back at `CREDIT_SHARE` (0.5) of the next, as a smaller value step and less
+  weight. It returns a list of (rule, opinion, share) and the scheduler logs the share.
+  Reverses the earlier "rules don't chain" decision. Tests: 6 more in `tests/test_rules.py`,
+  including depth capping, no self-chaining, and a failure costing the chain less further back.
+  176 tests.
 - **Rule families: variants that compete** (arbitration and variation). A rule named
   `family--variant` belongs to that family. `RuleEngine.vary(name, path, values)` and
   `python -m rules vary` issue one rule per value of a dotted path in an existing rule's spec.
@@ -301,7 +312,8 @@ up across a process boundary.
 - Two machines checked by hand on one Wi-Fi hotspot only: no NAT, no lossy links, no automated test.
 - The self-description isn't shared with peers, expires after 7 days, and nothing reruns it.
 - A reported outcome is the worker's word; nothing checks it's true.
-- Rules don't chain, nothing proposes new rules (variants sweep a parameter you pick), and a
+- Chains stop at two rule steps and each step back earns half the credit; both numbers are
+  choices, not findings. Nothing proposes new rules (variants sweep a parameter you pick), and a
   silenced variant keeps its row in the ledger for months because failures add weight.
 
 ### The ugly

@@ -116,8 +116,13 @@ Each decision was made against the code as it stood; revisit only with a reason.
 - **Outcomes are evidence only from the agent that did the work.** A `task_result` counts if it
   answers a task this node sent to that agent, once per task. ACKs never count: the scheduler ACKs
   automatically, so counting them would be receipt-as-evidence.
-- **Rules don't chain.** A rule never fires on another rule's output, so no loops. Revisit with a
-  depth limit if multi-step rules are needed.
+- **Rules chain, with three bounds.** A rule may fire on this node's own rule outputs: at most
+  `max_depth` (2) rule steps, never on a capsule its own chain produced, and identical outputs are
+  blocked by their derived ids. Nothing else the node sends triggers its rules. Chosen because
+  without composition behaviour can't build on behaviour; the bounds are what keep it from looping.
+- **Credit reaches back along the chain.** The rule that emitted the task takes the outcome in
+  full, each step further back at `CREDIT_SHARE` (0.5) of the next: a smaller value step and less
+  weight, so a rule that set up a good outcome gains, but less than the one that asked for it.
 - **One rule per family fires.** Variants of a job (`family--variant`) compete: the most trusted
   usually, one of the least tested with probability `explore`. Chosen so trust can select between
   behaviours, not only kill them; without it every variant answers the same capsule at once.
@@ -168,7 +173,8 @@ Each decision was made against the code as it stood; revisit only with a reason.
 
 - **How far to trust a reported outcome?** A rule learns from what the worker says happened.
   Should outcomes from a peer be weighted by trust in that peer, or confirmed by a second observer?
-- **Rule chaining.** Allow rules to fire on rule outputs with a depth limit?
+- **How far should credit reach?** Two steps and a half share per step are guesses. Should the
+  share depend on how much the earlier rule changed the outcome, or fade with time between steps?
 - **Gateway state across restarts.** Short task ids and seen device ids are in memory. Persist them
   in `store/gateway.db`, or accept that a gateway restart loses in-flight tasks?
 - **Keeping edge sessions open.** Alice drops idle sessions after 30 s, so a quiet device reconnects
@@ -213,14 +219,11 @@ Each decision was made against the code as it stood; revisit only with a reason.
    within one server process after a silent drop.
 2. **Purpose from margins.** Being outside a margin is pressure, returning inside is success:
    outcomes the system generates itself, instead of a person pressing A or B. Needs the legs.
-3. **Composition:** rules firing on rule outputs with a depth limit, so behaviour can build on
-   behaviour.
-4. **Credit over time:** an outcome crediting a sequence of steps, not one.
-5. **Make `hal/` an interface.** Protocols for transport, clock and a sensor bus; move
+3. **Make `hal/` an interface.** Protocols for transport, clock and a sensor bus; move
    implementations out; a simulated sensor bus for the laptop.
-6. **Bootstrap:** signed, stored genesis, then `__hardware__`, `__setup__`, `__sensors__`.
-7. **Merged sender** decision (merge output currently fails validation).
-8. **Relaying and a reply queue**, which turn the star into a network.
+4. **Bootstrap:** signed, stored genesis, then `__hardware__`, `__setup__`, `__sensors__`.
+5. **Merged sender** decision (merge output currently fails validation).
+6. **Relaying and a reply queue**, which turn the star into a network.
 
 ## Housekeeping
 

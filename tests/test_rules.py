@@ -157,16 +157,88 @@ def test_fires_with_provenance_and_placeholders():
     assert store.get_record(store.find(capsule_id=task.id)[0]["digest"]) is not None, "output is in the ledger"
 
 
-def test_fires_once_per_input_and_never_on_rule_output_or_own_capsules():
+def test_fires_once_per_input_and_only_on_capsules_for_the_owner():
     store, engine, sched = setup()
     engine.issue("verify-risk", RISK_WHEN, VERIFY_THEN)
     incoming = capsule()
     assert len(fire(sched, incoming)) == 1
     assert fire(sched, incoming) == [], "same rule, same input: once"
-    rule_made = capsule(provenance=Provenance(derived_from=("urn:uuid:a", "urn:uuid:b"), method="rule"))
-    assert fire(sched, rule_made) == [], "rule outputs don't trigger rules"
     assert engine.evaluate(capsule(sender=ALICE)) == [], "a node's own capsules don't trigger its rules"
     assert engine.evaluate(capsule(receiver=CAROL)) == [], "only capsules addressed to the owner"
+
+
+# --- chaining and shared credit ---
+
+# on a chained input the previous output's {from} is this node, so ask its {to} instead
+NOTE_THEN = [{"intent": "request", "to": "{to}", "trigger": "task", "topic": "checked_{topic}",
+              "claims": [{"type": "directive", "statement": "log that {claim} was checked"}]}]
+
+
+def chain_setup():
+    """Rule A fires on *_risk and asks Bob to verify; rule B fires on A's output."""
+    store, engine, sched = setup()
+    a = engine.issue("verify-risk", RISK_WHEN, VERIFY_THEN)
+    b = engine.issue("log-checked", {"topic": "supply_chain_risk", "trigger": "task"}, NOTE_THEN)
+    return store, engine, sched, a, b
+
+
+def test_a_rule_fires_on_another_rules_output():
+    store, engine, sched, a, b = chain_setup()
+    out = fire(sched)
+    topics = {o.semantics.topic for o in out}
+    assert topics == {"supply_chain_risk", "checked_supply_chain_risk"}, topics
+    second = next(o for o in out if o.semantics.topic == "checked_supply_chain_risk")
+    first = next(o for o in out if o.semantics.topic == "supply_chain_risk")
+    assert second.provenance.derived_from == (b, first.id)
+    assert engine.chain(to_wire(second))[1] == [b, a]          # nearest rule first
+
+
+def test_a_chain_stops_at_max_depth():
+    store, engine, sched, a, b = chain_setup()
+    engine.issue("log-again", {"topic": "checked_*", "trigger": "task"},
+                 [{"intent": "request", "to": "{from}", "trigger": "task", "topic": "again_{topic}",
+                   "claims": [{"type": "directive", "statement": "and again: {claim}"}]}])
+    topics = {o.semantics.topic for o in fire(sched)}
+    assert "again_checked_supply_chain_risk" not in topics, "max_depth 2 allows two rule steps"
+    assert topics == {"supply_chain_risk", "checked_supply_chain_risk"}
+
+
+def test_a_rule_never_fires_on_its_own_chain():
+    store, engine, sched = setup()
+    engine.issue("echo-risk", {"topic": "*_risk", "trigger": "task"},
+                 [{"intent": "request", "to": "{from}", "trigger": "task", "topic": "{topic}",
+                   "claims": [{"type": "directive", "statement": "again: {claim}"}]}])
+    out = fire(sched, capsule(trigger=Trigger.TASK, intent=Intent.REQUEST))
+    assert len(out) == 1, "a rule fires once, not on its own output"
+
+
+def test_the_chain_shares_the_credit():
+    store, engine, sched, a, b = chain_setup()
+    out = fire(sched)
+    task = next(o for o in out if o.semantics.topic == "checked_supply_chain_risk")
+    sched.dispatch(result_for(task, "success"))
+    near, far = rule_row(store, b), rule_row(store, a)
+    assert near["evidence_count"] == 1 and far["evidence_count"] == 1
+    assert round(near["value"], 3) == 1.1 and round(near["weight"], 3) == 1.0     # full outcome
+    assert round(far["value"], 3) == 1.05 and round(far["weight"], 3) == 0.5      # half of it
+    assert any("share 0.50" in line for line in sched.learned)
+
+
+def test_a_failure_costs_the_chain_less_the_further_back_it_is():
+    store, engine, sched, a, b = chain_setup()
+    task = next(o for o in fire(sched) if o.semantics.topic == "checked_supply_chain_risk")
+    sched.dispatch(result_for(task, "failure"))
+    near, far = rule_row(store, b), rule_row(store, a)
+    assert round(near["value"], 3) == 0.8 and round(near["weight"], 3) == 3.0
+    assert round(far["value"], 3) == 0.9 and round(far["weight"], 3) == 1.5
+
+
+def test_only_rules_in_the_chain_are_credited():
+    store, engine, sched, a, b = chain_setup()
+    idle = engine.issue("unrelated", {"topic": "weather"}, VERIFY_THEN)
+    task = next(o for o in fire(sched) if o.semantics.topic == "checked_supply_chain_risk")
+    sched.dispatch(result_for(task, "success"))
+    assert rule_row(store, idle)["evidence_count"] == 0
 
 
 def test_invalid_output_is_skipped_and_reported():
