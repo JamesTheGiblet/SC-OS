@@ -1,8 +1,8 @@
 """
 The M5StickC PLUS2's sensors: IMU (MPU6886: accelerometer, gyroscope, die
 temperature), real-time clock (BM8563), battery voltage, the ESP32's own
-temperature sensor, the three buttons, and a VL53L0X time-of-flight distance
-sensor on the Grove port when one is connected. Also the buzzer, the one sound output.
+temperature sensor, the three buttons, a VL53L0X time-of-flight distance
+sensor on the Grove port when one is connected, and digital IR edge sensors. Also the buzzer, the one sound output.
 
 Not read: the SPM1423 PDM microphone (clock 0, data 34). It answers when clocked,
 but MicroPython's I2S has no PDM input on the ESP32, and counting its data edges
@@ -45,6 +45,19 @@ DESCRIPTION = (
 # Added to the description only when the sensor answers at boot.
 TOF_DESCRIPTION = {"id": "tof", "type": "distance", "bus": "i2c1:0x29", "pin": "32,33", "unit": "mm",
                    "min": 0, "max": 2000, "margin_low": 50, "margin_high": 1200, "sample_ms": 200}
+
+# Digital IR reflectance modules looking down at the front: 1 = edge (nothing reflects).
+# Their outputs pull high only weakly, so the pin's pull-up does it; an unplugged sensor
+# then reads as an edge, which fails safe. Digital pins can't be detected, so list only
+# the sensors that are wired.
+EDGE_DESCRIPTION = (
+    {"id": "edge_left", "type": "edge", "bus": "gpio", "pin": "26", "unit": "edge",
+     "min": 0, "max": 1, "margin_low": 0, "margin_high": 0, "sample_ms": 20},
+    # Right sensor on pin 36: that pin has no internal pull-up, so add a 10 kohm resistor from
+    # G36 to 3V3 before uncommenting.
+    # {"id": "edge_right", "type": "edge", "bus": "gpio", "pin": "36", "unit": "edge",
+    #  "min": 0, "max": 1, "margin_low": 0, "margin_high": 0, "sample_ms": 20},
+)
 
 ABSENT = (
     "mic: SPM1423 PDM on pins 0,34; MicroPython has no PDM input",
@@ -158,7 +171,7 @@ class ReadingSender:
     MIN_INTERVAL_MS = 5000
     HEARTBEAT_MS = 25000                  # under the master's 30 s idle timeout, so the session stays open
     DEADBAND = {"accel": 0.05, "gyro": 20, "tilt": 5, "imu_temp": 1.0, "chip_temp": 1.0, "battery": 0.05,
-                "tof": 20}
+                "tof": 20, "edge_left": 1, "edge_right": 1}
 
     def __init__(self):
         self.sent = None
@@ -192,10 +205,45 @@ def iso_utc(clock):
     return "%04d-%02d-%02dT%02d:%02d:%02dZ" % clock
 
 
+class EdgeSensors:
+    """
+    Front edge detection from the digital IR modules in EDGE_DESCRIPTION.
+    A module's OUT is EDGE_LEVEL when nothing reflects under it. An edge counts only
+    after CONFIRM consecutive samples; it clears on the first sample with surface.
+    Measured on the left module: 0.34 V over a table, and only 1.56 V in the air
+    against a pull-down, but a clean 3.14 V with the pin's pull-up.
+    """
+
+    EDGE_LEVEL = 1
+    CONFIRM = 3
+
+    def __init__(self):
+        self.pins = {}
+        for d in EDGE_DESCRIPTION:
+            n = int(d["pin"])
+            try:
+                self.pins[d["id"]] = Pin(n, Pin.IN, Pin.PULL_UP)
+            except (ValueError, OSError):
+                self.pins[d["id"]] = Pin(n, Pin.IN)               # pins 34-39: needs an external pull-up
+        self.count = {sid: 0 for sid in self.pins}
+        self.edge = {sid: False for sid in self.pins}
+
+    def update(self):
+        """Sample both sensors; returns {id: True if an edge is confirmed}."""
+        for sid, pin in self.pins.items():
+            if pin.value() == self.EDGE_LEVEL:
+                self.count[sid] += 1
+            else:
+                self.count[sid] = 0
+            self.edge[sid] = self.count[sid] >= self.CONFIRM
+        return self.edge
+
+
 class Buzzer:
     """Tones on pin 2 that play without blocking: call tick() from the main loop."""
 
     TASK = ((2000, 70), (0, 60), (2000, 70))
+    EDGE = ((3200, 80), (0, 40), (3200, 80), (0, 40), (3200, 80))
     SUCCESS = ((1500, 70), (2500, 110))
     FAILURE = ((700, 250),)
 

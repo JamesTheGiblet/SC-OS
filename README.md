@@ -281,7 +281,8 @@ The screen (landscape, 240×135) shows:
 - tilt in large type: green when armed, yellow past 40°, grey until re-armed
 - accelerometer (g) and gyroscope (°/s) on three axes, the IMU's die temperature, the ESP32's own
   temperature (large fixed offset: read it as a trend) and battery voltage
-- distance from the ToF sensor (`tof 144 mm`, `no target`, or `not connected`)
+- distance from the ToF sensor and the edge sensors on one row (`tof  144mm  edge L:ok`), red when
+  an edge is under a sensor
 - the link to Alice (report sent, ack, task received, result sent)
 - the waiting task in a yellow box with `A = yes  B = no`, and the last outcome sent (green or red)
 
@@ -289,12 +290,13 @@ The buzzer beeps twice when a task arrives, chirps when you send a success and g
 a failure, without pausing the loop.
 
 At boot, and whenever the gateway asks, the stick describes its sensors (accel, gyro, tilt,
-imu_temp, chip_temp, battery, clock, buttons, and tof when the distance sensor is connected) and
+imu_temp, chip_temp, battery, clock, buttons, the wired edge sensors, and tof when the distance
+sensor is connected) and
 Alice stores the `__sensors__` capsule. Tilt's
 `margin_high` is the report threshold. Margins default to `sensors.py` in the firmware; an operator
 setup (`provision.py`) overrides them and the stick keeps the overrides in `setup.json`.
 
-The stick also sends its readings (accel, gyro, tilt, both temperatures, battery, distance when
+The stick also sends its readings (accel, gyro, tilt, both temperatures, battery, edges as 0/1, distance when
 something is in range, and its clock in UTC) when one moves past its deadband, at most every 5 s, and every 25 s regardless. The 25 s
 heartbeat keeps the gateway's session open under Alice's 30 s idle timeout. The clock is kept in
 UTC; `deploy.py` also writes the PC's UTC offset to `tz.txt` so the screen shows local time.
@@ -305,6 +307,7 @@ Other hardware on the stick:
 | --- | --- |
 | SPM1423 PDM microphone (clock 0, data 34) | Not read. It answers when clocked, but MicroPython's I2S has no PDM input, and counting its data edges didn't track loudness. Needs a PDM-capable build or Arduino firmware. |
 | IR transmitter (pin 19, shared with the red LED) | Pulses whenever the LED blinks; no codes are sent. The ESP32's RMT peripheral could send real remote-control codes. |
+| Digital IR edge sensors looking down at the front | Left sensor read on G26 (VCC to 3V3, GND, OUT to G26). Its output pulls high only weakly: 1.56 V in the air against a pull-down, a clean 3.14 V with the pin's pull-up, so the firmware uses the pull-up and an unplugged sensor reads as an edge (fails safe). An edge needs 3 samples in a row. The stick beeps and shows it at once, then reports `edge_risk`, which Alice's verify rule asks you to confirm with A/B; it re-arms after a second on surface. A right sensor goes on G36, which has no internal pull-up: add a 10 kΩ resistor from G36 to 3V3 and uncomment it in `EDGE_DESCRIPTION`. Tune each module's potentiometer until its signal LED is off in the air and on 1–2 cm over the table. |
 | VL53L0X time-of-flight distance sensor (CJMCU V2 board) on the Grove port | Read. VIN to 3V3, GND, SDA to G32, SCL to G33; XSHUT and GPIO1 unconnected. Detected at boot (I2C `0x29`); without it the stick runs as before. Range 0–2000 mm, default margins 50–1200 mm. `vl53l0x.py` ports Pololu's setup sequence; readings are continuous and non-blocking. Peel the film off the sensor window: through it every reading is "no target". |
 
 One-time setup (erases the stick; back up first if you want the factory firmware back):
@@ -640,6 +643,10 @@ your own evidence count and decay clock. Never store it as your opinion.
 - **Small device buffers.** The stick's serial input buffer is small. The gateway paces frames and
   the firmware reads between screen rows (10 frames sent back to back with no gap all arrived), but
   a long enough burst could still overflow it; a lost task simply never gets an outcome.
+- **Edge sensors are configured, not detected.** A digital pin can't tell whether a sensor is wired,
+  so `EDGE_DESCRIPTION` lists what is wired. Their trust is thin too: 0 and 1 are always in range, so
+  an edge sensor earns trust just by reporting. Only the left sensor exists so far, and the B (false
+  alarm) answer for an edge was not tried on the device.
 - **Distance trust is thin.** The ToF sensor has no physics cross-check, so it earns trust only by
   reporting values inside 0–2000 mm. A sensor stuck at 500 mm would look fine. Its accuracy was
   checked by hand, not measured.

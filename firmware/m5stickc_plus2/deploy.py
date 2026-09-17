@@ -77,6 +77,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("port")
     ap.add_argument("--exec", dest="code")
+    ap.add_argument("--timeout", type=float, default=10, help="seconds to wait for --exec code to finish")
     ap.add_argument("--remove-main", action="store_true")
     args = ap.parse_args()
 
@@ -88,7 +89,7 @@ def main() -> int:
     try:
         repl.enter()
         if args.code:
-            print(repl.exec(args.code), end="")
+            print(repl.exec(args.code, timeout=args.timeout), end="")
             return 0
         if args.remove_main:
             repl.exec("import os\ntry:\n    os.remove('main.py')\nexcept OSError:\n    pass")

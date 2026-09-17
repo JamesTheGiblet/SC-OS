@@ -351,14 +351,16 @@ def firmware_description():
     return found["DESCRIPTION"], found["ABSENT"]
 
 
-def test_firmware_tof_description_is_accepted():
+def test_firmware_optional_sensor_descriptions_are_accepted():
     import ast
     from edge.sensors import validate_sensor_list
     tree = ast.parse((ROOT / "firmware" / "m5stickc_plus2" / "sensors.py").read_text(encoding="utf-8"))
-    tof = next(ast.literal_eval(n.value) for n in tree.body
-               if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "TOF_DESCRIPTION")
+    found = {n.targets[0].id: ast.literal_eval(n.value) for n in tree.body
+             if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") in ("TOF_DESCRIPTION", "EDGE_DESCRIPTION")}
     description, _ = firmware_description()
-    validate_sensor_list({"src": "m5-00aa11", "sensors": list(description) + [tof]})
+    full = list(description) + list(found["EDGE_DESCRIPTION"]) + [found["TOF_DESCRIPTION"]]
+    validate_sensor_list({"src": "m5-00aa11", "sensors": full})
+    assert [d["pin"] for d in found["EDGE_DESCRIPTION"]] == ["26"]          # right sensor not wired yet
 
 
 def test_firmware_files_compile():

@@ -5,7 +5,12 @@ Tilt the stick past its tilt margin (40 degrees unless an operator setup changes
 it reports "tilt_risk" as a threshold (not while a task waits). Alice's verify rule sends a task back; it shows on the screen and the
 LED blinks. Press A (the big front button) if the report was real, B (the side
 button) if it wasn't. The outcome goes back to Alice and moves the rule's trust.
-Tilt back under half the margin to re-arm. Button C (power, short press) turns the
+Tilt back under half the margin to re-arm.
+
+IR edge sensors look down at the front (left pin 26; right pin 36 once wired with
+a 10 kohm pull-up). When one loses the surface the stick beeps at once and shows EDGE on screen, then
+reports "edge_risk" (confirm with A or B); it re-arms after both see surface
+for a second. Button C (power, short press) turns the
 backlight on and off.
 
 The screen shows the clock, tilt, accelerometer, gyroscope, IMU and chip
@@ -31,7 +36,9 @@ import json
 
 from sctalk import Talk, apply_setup
 import sensors as sensor_info
-from sensors import Buzzer, ReadingSender, Sensors, iso_utc
+from sensors import Buzzer, EdgeSensors, ReadingSender, Sensors, iso_utc
+
+EDGE_REARM_MS = 1000          # both sensors on surface this long before another edge report
 
 HOLD = Pin(4, Pin.OUT, value=1)          # keep power on when running from the battery
 LED = Pin(19, Pin.OUT, value=0)
@@ -115,7 +122,7 @@ class Screen:
             put("env", 60, 11, "imu %4.1fC cpu %3dC  %4.2fV" % (temp, chip, volts), tft.WHITE)
         else:
             put("env", 60, 11, "cpu %3dC  bat %4.2fV" % (chip, volts), tft.WHITE)
-        put("tof", 72, 11, tof, tft.CYAN)
+        put("tof", 72, 11, tof, tft.RED if "EDGE" in tof else tft.CYAN)
         put("link", 86, 11, link, tft.GREY)
         if task:
             put("task1", 97, 11, wrap(task, 29)[0], tft.BLACK, tft.YELLOW)
@@ -134,10 +141,12 @@ def main():
     talk = Talk(name, boot_tag, print)
     sensors = Sensors()
     buzzer = Buzzer()
+    edges = EdgeSensors()
     sender = ReadingSender()
     tz = tz_offset_minutes()
     overrides = load_overrides()
-    base = list(sensor_info.DESCRIPTION) + ([sensor_info.TOF_DESCRIPTION] if sensors.tof else [])
+    base = (list(sensor_info.DESCRIPTION) + list(sensor_info.EDGE_DESCRIPTION)
+            + ([sensor_info.TOF_DESCRIPTION] if sensors.tof else []))
     ids = [d["id"] for d in base]
     description, error = apply_setup(base, {k: v for k, v in overrides.items() if k in ids})
     if error:                               # a saved setup that no longer fits: back to defaults
@@ -198,6 +207,7 @@ def main():
     talk.describe(description, sensor_info.ABSENT)
 
     armed = True
+    edge_armed, surface_since = True, time.ticks_ms()
     backlight = True
     last = "last: none yet"
     held = set()
@@ -206,6 +216,24 @@ def main():
 
     while True:
         read_link()
+
+        # edges: act locally at once, then tell Alice (one question at a time)
+        edge = edges.update()
+        sides = [sid.replace("edge_", "") for sid in sorted(edge) if edge[sid]]
+        if sides:
+            surface_since = time.ticks_ms()
+            if edge_armed:
+                edge_armed = False
+                buzzer.play(Buzzer.EDGE)
+                where = " and ".join(sides)
+                note("EDGE under " + where)
+                if talk.task is None:
+                    talk.report("edge_risk", "edge under %s sensor%s" % (where, "s" if len(sides) > 1 else ""), 0.9)
+                    link = "sent edge_risk " + where
+                else:
+                    link = "EDGE " + where + " (task waiting)"
+        elif not edge_armed and time.ticks_diff(time.ticks_ms(), surface_since) >= EDGE_REARM_MS:
+            edge_armed = True
 
         # buttons, on press
         now_held = set(sensors.pressed())
@@ -245,7 +273,9 @@ def main():
             clock = sensors.clock() if sensors.rtc_ok else None
             chip, volts = sensors.chip_celsius(), sensors.battery_volts()
             mm = sensors.distance_mm()
-            tof = ("tof %4d mm" % mm) if mm is not None else ("tof  no target" if sensors.tof else "tof  not connected")
+            tof = ("tof%5dmm" % mm) if mm is not None else ("tof  none " if sensors.tof else "tof  --   ")
+            tof += "  edge " + " ".join("%s:%s" % (sid[5].upper(), "EDGE" if edge[sid] else "ok")
+                                        for sid in sorted(edge))
             screen.draw(name, local_hms(clock, tz) if clock else None, tilt, accel, gyro, temp, chip, volts, tof,
                         armed, link, talk.task["s"] if talk.task else None, last, report_deg)
 
@@ -258,6 +288,8 @@ def main():
                 values["clock"] = iso_utc(clock)
             if mm is not None:
                 values["tof"] = mm
+            for sid in edge:
+                values[sid] = 1 if edge[sid] else 0
             now_ms = time.ticks_ms()
             if sender.due(values, now_ms):
                 talk.readings(values)

@@ -30,8 +30,8 @@ One rule, `verify-high-confidence-risk`, has earned trust from four agents on re
 | Identity and replay | Keys pinned on first contact; forged hellos, tampering, key changes and byte-identical replays rejected, also across restarts (tests and real runs) |
 | Two machines | Windows PC ↔ Android phone in Termux over Wi-Fi: pinning, replay rejection, dropped connections, overlapping sessions; clock offset measured as −1.0 s / +1.0 s from each side |
 | Learning rules | Rules are signed capsules; outcomes move their trust only when reported by the agent that did the task, counted once; trust survives restarts |
-| Edge device | M5StickC PLUS2 on MicroPython: tilt report → Alice's rule → task on its screen → button A/B → outcome counted |
-| Sensor descriptions | The stick describes 9 sensors, including a VL53L0X distance sensor added on its Grove port; the gateway builds a signed `__sensors__` capsule with margins as evidence; Alice stores it |
+| Edge device | M5StickC PLUS2 on MicroPython: tilt or edge report → Alice's rule → task on its screen → button A/B → outcome counted; the edge alarm sounds on the stick before Alice hears of it |
+| Sensor descriptions | The stick describes 10 sensors, including a VL53L0X distance sensor and an IR edge sensor added to it; the gateway builds a signed `__sensors__` capsule with margins as evidence; Alice stores it |
 | Sensor trust | The stick sends readings; Alice checks them for physical plausibility herself and each sensor earns its own opinion (all seven readable sensors judged plausible on the device) |
 | Operator setup | A setup file (tilt 30°, battery 3.5–4.3 V) was issued while the stick ran, delivered as a signed task, applied, confirmed by the stick's new description, and kept across a reboot |
 | The law | Asserting tests for decay, trajectories and sharing; they found a real bug (decay counted twice) that was fixed |

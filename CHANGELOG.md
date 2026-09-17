@@ -56,6 +56,16 @@ up across a process boundary.
   USB, clock correct; 10 frames sent back to back with no gap all arrived while the screen redrew.
   Found on the device and fixed: 40 MHz SPI on the screen's pins crashed the firmware in a boot
   loop (the limit on those pins is 26.7 MHz; it now uses 20 MHz).
+- **Front edge detection on the M5.** Digital IR reflectance modules looking down, described in
+  `EDGE_DESCRIPTION` (left on G26 so far; right on G36 needs an external 10 kΩ pull-up). `EdgeSensors`
+  confirms an edge after 3 consecutive samples. The stick acts locally first (three beeps, a red
+  `edge L:EDGE` row), then reports `edge_risk` as a threshold, holding the report while another task
+  waits, and re-arms after a second on surface. Edges also go out as 0/1 readings. Found on the device:
+  the module's output reached only 1.56 V against the pin's pull-down and always read 0; with the
+  pin's pull-up it switches cleanly (0.34 V over a table, 3.14 V in the air), and an unplugged sensor
+  then reads as an edge. `deploy.py --timeout` for longer `--exec` runs. Verified with Alice: 10
+  sensors described, two edges reported, both confirmed with A, `edge_risk` +1.20 and the verify rule
+  credited; `sensor:m5-96c048/edge_left` formed. 163 tests.
 - **Time-of-flight distance sensor on the M5.** A VL53L0X (CJMCU V2 board) on the Grove port (SDA
   32, SCL 33). `firmware/m5stickc_plus2/vl53l0x.py` ports Pololu's initialisation (SPAD setup, tuning
   table, timing budget, VHV and phase calibration) with continuous, non-blocking reads. The stick
@@ -304,6 +314,8 @@ up across a process boundary.
 - Plausibility checks catch impossible readings, not a sensor that is steadily wrong; thresholds
   are tuned for the M5.
 - The ToF sensor earns trust only from staying in range, and its accuracy was checked by hand.
+- Edge sensors are configured in firmware, not detected, and earn trust just by reporting 0 or 1;
+  only the left one is wired, and the B answer for an edge wasn't tried on the device.
 - Setups are signed by the node's key (no separate operator identity), accumulate on the device,
   and reach it only while it reports.
 - A still M5 adds about 3,500 readings capsules a day; its sensor description expires after a day,
