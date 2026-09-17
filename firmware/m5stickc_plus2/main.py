@@ -28,6 +28,7 @@ from machine import Pin
 
 import st7789 as tft
 from sctalk import Talk
+import sensors as sensor_info
 from sensors import Buzzer, Sensors
 
 HOLD = Pin(4, Pin.OUT, value=1)          # keep power on when running from the battery
@@ -121,12 +122,16 @@ def main():
             elif what == "refuse":
                 link = "alice: refused"
                 note("refused by the master")
+            elif what == "describe":
+                talk.describe(sensor_info.DESCRIPTION, sensor_info.ABSENT)
+                note("sent sensor list (%d sensors)" % len(sensor_info.DESCRIPTION))
 
     screen = Screen(read_link)          # reads the link between row pushes, too
     if not sensors.imu_ok:
         note("IMU not found; buttons still report")
     note("%s ready: tilt past %d degrees to report" % (name, TILT_REPORT_DEG))
     talk.report("status", "%s online" % name, 1.0, trigger="announce")
+    talk.describe(sensor_info.DESCRIPTION, sensor_info.ABSENT)
 
     armed = True
     backlight = True

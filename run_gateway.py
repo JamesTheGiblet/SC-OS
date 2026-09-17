@@ -9,6 +9,7 @@ capsule and sends it to Alice as agent://<src>, over that device's own signed
 session. Alice's replies and tasks are downgraded and written back as frames.
 
     device -> gateway   {"src": "m5-a1b2c3", "cap": {"v": "1.0", "id": "r1", "to": "alice", ...}}
+    device -> gateway   {"src": "m5-a1b2c3", "sensors": [{"id": "imu_temp", ...}], "absent": [...]}
     gateway -> device   {"dst": "m5-a1b2c3", "cap": {..., "re": "r1"}}
 
 Lines that don't start with "{" (boot messages, a REPL banner) are ignored.
@@ -68,6 +69,7 @@ def main() -> int:
             dev.flush()
             time.sleep(FRAME_GAP_SECONDS)       # let a small device drain its input buffer
         where = f"serial {args.serial} at {args.baud} baud"
+        write({"dst": "*", "cmd": "describe"})  # a device that booted earlier describes its sensors now
     else:
         lines = iter(sys.stdin.readline, "")
 
@@ -88,6 +90,7 @@ def main() -> int:
                 c = gateway.handle_frame(json.loads(line))
                 log(f"[{c.sender.removeprefix('agent://')}] {c.intent.value.upper()} {c.semantics.topic} "
                     f"trigger={c.trigger.value}" + (f" outcome={c.outcome.status}" if c.outcome else "")
+                    + (f" ({len(c.semantics.claims)} sensors)" if c.semantics.topic == "__sensors__" else "")
                     + " -> alice")
             except json.JSONDecodeError as e:
                 log(f"REJECT not JSON: {e}")

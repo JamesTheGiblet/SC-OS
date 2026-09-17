@@ -259,6 +259,96 @@ def test_device_firmware_protocol_through_gateway():
         alice.close()
 
 
+def sensor(**kw) -> dict:
+    s = {"id": "imu_temp", "type": "temperature", "bus": "i2c0:0x68", "pin": "21,22", "unit": "C",
+         "min": -40, "max": 85, "margin_low": 0, "margin_high": 65, "sample_ms": 200}
+    s.update(kw)
+    return s
+
+
+def test_sensor_list_checks():
+    from edge.sensors import validate_sensor_list
+    validate_sensor_list({"src": "m5", "sensors": [sensor()], "absent": ["mic: no PDM"]})
+    bad = {
+        "no sensors": {"src": "m5", "sensors": []},
+        "bad id": {"src": "m5", "sensors": [sensor(id="Temp!")]},
+        "missing field": {"src": "m5", "sensors": [{k: v for k, v in sensor().items() if k != "unit"}]},
+        "extra field": {"src": "m5", "sensors": [sensor(colour="red")]},
+        "bad src": {"src": "M5 BAD", "sensors": [sensor()]},
+        "duplicate id": {"src": "m5", "sensors": [sensor(), sensor()]},
+        "margin below min": {"src": "m5", "sensors": [sensor(margin_low=-50)]},
+        "margins crossed": {"src": "m5", "sensors": [sensor(margin_low=70, margin_high=60)]},
+        "margin above max": {"src": "m5", "sensors": [sensor(margin_high=90)]},
+        "sample_ms zero": {"src": "m5", "sensors": [sensor(sample_ms=0)]},
+    }
+    for label, frame in bad.items():
+        assert rejected(validate_sensor_list, frame) == "edge_sensors", label
+
+
+def test_sensors_capsule_shape():
+    from edge.sensors import FIELDS, TOPIC, parse_evidence, sensors_capsule
+    frame = {"src": "m5", "sensors": [sensor(), sensor(id="battery", type="voltage", bus="adc", pin="38",
+                                                     unit="V", min=0, max=5, margin_low=3.3,
+                                                     margin_high=4.35)],
+             "absent": ["mic: no PDM input"]}
+    c = sensors_capsule(frame, sender="agent://m5", receiver=ALICE)
+    validate(to_wire(c))
+    assert c.semantics.topic == TOPIC and c.trigger.value == "announce"
+    assert [cl.statement for cl in c.semantics.claims] == ["sensor:imu_temp", "sensor:battery"]
+    assert c.semantics.claims[1].evidence == (
+        "id=battery", "type=voltage", "bus=adc", "pin=38", "unit=V", "min=0", "max=5",
+        "margin_low=3.3", "margin_high=4.35", "sample_ms=200")
+    assert all(len(cl.evidence) == len(FIELDS) for cl in c.semantics.claims)
+    assert c.semantics.uncertainty.known_unknowns == ("mic: no PDM input",)
+    back = parse_evidence(to_wire(c)["semantics"]["claims"][1])
+    assert back["margin_low"] == 3.3 and back["sample_ms"] == 200 and back["unit"] == "V"
+
+
+def test_device_sensor_list_reaches_alice_signed():
+    """The firmware's own sensor list, through the gateway, into Alice's ledger."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fw_sctalk", ROOT / "firmware" / "m5stickc_plus2" / "sctalk.py")
+    sctalk = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sctalk)
+    description, absent = firmware_description()
+
+    alice = AliceServer()
+    gw, frames = start(alice)
+    try:
+        talk = sctalk.Talk("m5-00aa11", "d0d0", lambda line: gw.handle_frame(json.loads(line)))
+        assert talk.receive_line(json.dumps({"dst": "*", "cmd": "describe"})) == "describe"
+        assert talk.receive_line(json.dumps({"dst": "m5-other", "cmd": "describe"})) is None
+        talk.describe(description, absent)
+        assert next_frame(frames)["cap"]["i"] == "ack"
+
+        deadline = time.monotonic() + 5
+        while not alice.store.find(topic="__sensors__"):
+            assert time.monotonic() < deadline, "the sensor capsule never reached Alice"
+            time.sleep(0.05)
+        rec = alice.store.get_record(alice.store.find(topic="__sensors__")[0]["digest"])
+        cap = rec["capsule"]
+        assert cap["from"] == "agent://m5-00aa11" and rec["envelope"]["pubkey_id"] == "agent://m5-00aa11"
+        ids = [cl["statement"] for cl in cap["semantics"]["claims"]]
+        assert ids == [f"sensor:{s['id']}" for s in description]
+        assert "sensor:tilt" in ids and "sensor:battery" in ids
+        assert cap["semantics"]["uncertainty"]["known_unknowns"] == list(absent)
+    finally:
+        gw.close()
+        alice.close()
+
+
+def firmware_description():
+    """DESCRIPTION and ABSENT from firmware/m5stickc_plus2/sensors.py, without importing its hardware modules."""
+    import ast
+    tree = ast.parse((ROOT / "firmware" / "m5stickc_plus2" / "sensors.py").read_text(encoding="utf-8"))
+    found = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) \
+                and node.targets[0].id in ("DESCRIPTION", "ABSENT"):
+            found[node.targets[0].id] = ast.literal_eval(node.value)
+    return found["DESCRIPTION"], found["ABSENT"]
+
+
 def test_firmware_files_compile():
     """MicroPython can't run here, but every firmware file must at least be valid Python."""
     files = sorted((ROOT / "firmware" / "m5stickc_plus2").glob("*.py"))

@@ -56,6 +56,17 @@ up across a process boundary.
   USB, clock correct; 10 frames sent back to back with no gap all arrived while the screen redrew.
   Found on the device and fixed: 40 MHz SPI on the screen's pins crashed the firmware in a boot
   loop (the limit on those pins is 26.7 MHz; it now uses 20 MHz).
+- **Edge devices describe their sensors** (target design 7). A device sends
+  `{"src", "sensors": [...], "absent": [...]}`; the gateway checks it against `edge/sc_sensors.json`
+  (all ten fields, unique ids, `min ≤ margin_low ≤ margin_high ≤ max`) and builds a `__sensors__`
+  capsule (`edge/sensors.py`): trigger `announce`, one claim `sensor:<id>` per sensor with
+  `key=value` evidence for each field, and `absent` hardware as known unknowns. Signed as the
+  device's agent. The gateway sends `{"dst": "*", "cmd": "describe"}` when it opens a serial port,
+  so a device that booted earlier describes itself. The M5 firmware declares eight sensors in
+  `sensors.py` (accel, gyro, tilt, imu_temp, chip_temp, battery, clock, buttons) and sends them at
+  boot and on request. Tests (3): list checks, capsule shape, and the firmware's own list through
+  the gateway into Alice's signed ledger. Verified on the stick: Alice stored
+  `__sensors__` from `agent://m5-96c048` with all eight claims and both known unknowns. 139 tests.
 - **Buzzer and chip temperature on the M5StickC PLUS2.** Non-blocking tones on pin 2: two beeps
   when a task arrives, a chirp on success, a low tone on failure (heard on the device). The screen
   adds the ESP32's internal temperature, which has a large fixed offset. The microphone isn't
@@ -64,7 +75,7 @@ up across a process boundary.
 - **Verified on the device** (2026-09-17): `agent://m5-96c048` through `run_gateway.py --serial COM4`.
   Its outcomes moved topic `tilt_risk` and the verify rule, up on A and down on B, as the model says.
   Found on the device and fixed: frames ignored after the port was reopened (both sides now parse
-  from the first `{`); an ACK and task back to back overflowed the device's ~260-byte input buffer
+  from the first `{`); an ACK and task back to back were lost, most likely overflowing the device's small input buffer
   (the firmware waits on input instead of sleeping; the gateway leaves 50 ms between frames and
   skips `# ` note lines); new tilt reports replaced a waiting task (one question at a time).
 - **Asserting tests for the kernel and the law.** `tests/test_weight.py` (14, was a print script),
@@ -256,7 +267,8 @@ up across a process boundary.
   control of its devices.
 - An edge outcome is a button press; nothing checks the tilt was real. The M5 link is USB serial,
   not ESP-NOW, and the device's small input buffer can still lose a task in a burst.
-- The M5's readings are only displayed; none reach Alice, so no sensor has an opinion yet.
+- Alice knows the M5's sensors but not their readings, so no sensor has an opinion yet; the
+  margins are firmware defaults, not an operator's `__setup__`.
 - Trust exists only in the node's database; lose the file and every rule and topic opinion
   starts over.
 - Logged values are rounded but stances aren't: a rule printed `value=+1.50 stance=leaning_trusted`

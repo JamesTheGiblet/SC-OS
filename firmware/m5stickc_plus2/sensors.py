@@ -19,6 +19,32 @@ from machine import ADC, I2C, PWM, Pin
 
 MPU = 0x68
 RTC = 0x51
+
+# What this stick can sense, for the __sensors__ capsule the gateway builds. min/max are the
+# physical range; margins are operating bounds (supplied here until a __setup__ capsule does it).
+# tilt's margin_high is the report threshold.
+DESCRIPTION = (
+    {"id": "accel", "type": "accelerometer", "bus": "i2c0:0x68", "pin": "21,22", "unit": "g",
+     "min": -2, "max": 2, "margin_low": -1.5, "margin_high": 1.5, "sample_ms": 200},
+    {"id": "gyro", "type": "gyroscope", "bus": "i2c0:0x68", "pin": "21,22", "unit": "dps",
+     "min": -2000, "max": 2000, "margin_low": -500, "margin_high": 500, "sample_ms": 200},
+    {"id": "tilt", "type": "inclination", "bus": "i2c0:0x68", "pin": "21,22", "unit": "deg",
+     "min": 0, "max": 180, "margin_low": 0, "margin_high": 40, "sample_ms": 200},
+    {"id": "imu_temp", "type": "temperature", "bus": "i2c0:0x68", "pin": "21,22", "unit": "C",
+     "min": -40, "max": 85, "margin_low": 0, "margin_high": 65, "sample_ms": 200},
+    {"id": "chip_temp", "type": "temperature", "bus": "internal", "pin": "none", "unit": "C",
+     "min": -40, "max": 125, "margin_low": 0, "margin_high": 85, "sample_ms": 200},
+    {"id": "battery", "type": "voltage", "bus": "adc", "pin": "38", "unit": "V",
+     "min": 0, "max": 5, "margin_low": 3.3, "margin_high": 4.35, "sample_ms": 200},
+    {"id": "clock", "type": "rtc", "bus": "i2c0:0x51", "pin": "21,22", "unit": "s",
+     "min": 0, "max": 86400, "margin_low": 0, "margin_high": 86400, "sample_ms": 1000},
+    {"id": "buttons", "type": "buttons", "bus": "gpio", "pin": "37,39,35", "unit": "pressed",
+     "min": 0, "max": 1, "margin_low": 0, "margin_high": 1, "sample_ms": 20},
+)
+ABSENT = (
+    "mic: SPM1423 PDM on pins 0,34; MicroPython has no PDM input",
+    "chip_temp: large fixed offset; trend only",
+)
 ACCEL_LSB_PER_G = 16384.0       # +-2 g
 GYRO_LSB_PER_DPS = 16.4         # +-2000 dps
 

@@ -39,7 +39,9 @@ where they disagree.
    `crypto`. *Not built.* `boot/genesis.py` still lists fixed capabilities.
 7. **`__sensors__` capsule.** One claim per sensor; evidence carries `id`, `type`, `bus`, `pin`,
    `unit`, `min`, `max`, `margin_low`, `margin_high`, `sample_ms`. Margins are operating
-   bounds, separate from physical min/max. *Not built.*
+   bounds, separate from physical min/max. *Built for edge devices:* the device sends a compact
+   list and the gateway builds the capsule (`edge/sensors.py`). Margins come from firmware until
+   `__setup__` exists; nodes with full Python don't describe their sensors yet.
 8. **`__setup__` capsule.** Pinout, buses, margins and sample rates, supplied by the operator,
    signed and stored at provision time; send a new one to reconfigure. *Not built.*
 9. **Read path.** Query `__sensors__`, parse evidence, read through HAL, compare against the
@@ -118,6 +120,11 @@ Each decision was made against the code as it stood; revisit only with a reason.
 - **Version choice is numeric.** Highest shared version wins by number, not string sort.
 - **Identity comes first at boot.** Key and genesis come before the hardware, setup and sensor
   capsules, because those capsules must be signed by someone.
+- **Edge devices describe their sensors; the gateway writes the capsule.** A stripped message
+  carries one short claim and no evidence, so a device sends a compact sensor list and the gateway
+  checks it and builds `__sensors__`. Chosen over one message per sensor (details squeezed into
+  120 characters) and over extending the edge format, because the gateway is already the trust
+  boundary that turns device messages into full capsules.
 - **Descriptive capsules use `key=value` evidence strings.** Hardware, sensor and setup capsules
   put one fact per evidence string, so they stay readable and queryable without nested JSON.
   Rules are the exception: a rule is a program, and its directive claim holds a JSON spec.
@@ -167,9 +174,9 @@ Each decision was made against the code as it stood; revisit only with a reason.
    accelerometer, gyroscope, IMU temperature, battery, link state and the waiting task. Still
    open: ESP-NOW between two boards (the gateway radio), and from step 3: NAT and reconnecting
    within one server process after a silent drop.
-2. **Sensors into SC-OS.** The M5 displays its readings but reports none. Next: a `__sensors__`
-   capsule describing them (target design 7) and the read path (target design 9): readings checked
-   against margins, outcomes recorded for `sensor:<id>`, readings sent when they change.
+2. **Sensor readings into SC-OS** (target design 9). The M5's `__sensors__` capsule reaches Alice;
+   its readings don't. Next: readings checked against the margins, outcomes recorded for
+   `sensor:<id>`, readings sent when they change.
 3. **Make `hal/` an interface.** Protocols for transport, clock and a sensor bus; move
    implementations out; a simulated sensor bus for the laptop.
 4. **Bootstrap:** signed, stored genesis, then `__hardware__`, `__setup__`, `__sensors__`.

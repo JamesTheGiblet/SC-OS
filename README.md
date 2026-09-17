@@ -8,8 +8,10 @@ The "OS" is the kernel that routes capsules between agents; the capsule protocol
 **Status: v0.1 plus multi-node sessions, self-description and learning rules.** A server node
 handles several peers at once over TCP, with signed capsules, pinned keys, replay protection and a
 SQLite ledger. Rules are capsules too: they fire on incoming capsules and gain or lose trust from
-reported outcomes. SC-OS also records its own code, docs and test results as capsules. Tested with three nodes on
-one machine and across two: a Windows PC and an Android phone (Termux) over Wi-Fi.
+reported outcomes. SC-OS also records its own code, docs and test results as capsules. The kernel
+has run with three nodes on one machine and across two: a Windows PC and an Android phone (Termux)
+over Wi-Fi. An M5StickC PLUS2 takes part as an edge device: it runs only the stripped protocol, and
+a gateway on the PC signs for it.
 Read [the good, the bad, and the ugly](#the-good-the-bad-and-the-ugly) before building on it.
 
 ## Why capsules
@@ -194,6 +196,19 @@ device -> gateway  {"src":"m5-a1b2c3","cap":{"v":"1.0","id":"r2","to":"alice","i
   forwarded to that device (or has expired), and a message id that device already sent.
 - **Sessions come and go.** Alice closes idle sessions after 30 s; the device's next frame opens a
   new one. Short-id tables belong to the device, so a result can arrive on a later session.
+- **Devices describe their sensors; the gateway writes the capsule.** A stripped message can't
+  carry a sensor description, so a device sends a compact list and the gateway checks it
+  (`edge/sc_sensors.json`: fields present, ids unique, `min ≤ margin_low ≤ margin_high ≤ max`)
+  and builds a `__sensors__` capsule, signed as the device's agent:
+
+  ```text
+  device -> gateway  {"src":"m5-96c048","sensors":[{"id":"battery","type":"voltage","bus":"adc","pin":"38","unit":"V","min":0,"max":5,"margin_low":3.3,"margin_high":4.35,"sample_ms":200},…],"absent":["mic: …"]}
+  gateway -> device  {"dst":"*","cmd":"describe"}      (sent when the gateway opens the port)
+  ```
+
+  One claim per sensor, statement `sensor:<id>` (the key its opinion will use), one evidence string
+  per field (`unit=V`, `margin_low=3.3`, …). Hardware the device has but can't read (`absent`)
+  becomes known unknowns. `edge.sensors.parse_evidence` reads a claim back into numbers.
 
 ### An M5StickC PLUS2 as the edge device
 
@@ -215,7 +230,11 @@ The screen (landscape, 240×135) shows:
 The buzzer beeps twice when a task arrives, chirps when you send a success and gives a low tone for
 a failure, without pausing the loop.
 
-Readings are shown only on the device; nothing sends them to Alice yet. Other hardware on the stick:
+At boot, and whenever the gateway asks, the stick describes its eight sensors (accel, gyro, tilt,
+imu_temp, chip_temp, battery, clock, buttons) and Alice stores the `__sensors__` capsule. Tilt's
+`margin_high` is the 40° report threshold. The margins come from `sensors.py` in the firmware until
+an operator's `__setup__` capsule supplies them. Readings themselves are shown only on the device.
+Other hardware on the stick:
 
 | Part | State |
 | --- | --- |
@@ -235,7 +254,7 @@ python -m esptool --port COM4 --baud 460800 write-flash 0x1000 ESP32_GENERIC-SPI
 The image is the generic ESP32 SPIRAM build from micropython.org. Then copy the firmware, and run:
 
 ```sh
-python firmware/m5stickc_plus2/deploy.py COM4       # copies sctalk.py and main.py, resets the stick
+python firmware/m5stickc_plus2/deploy.py COM4       # copies the firmware, sets the clock, resets the stick
 python run_alice.py --host 0.0.0.0
 python run_gateway.py --serial COM4
 ```
@@ -311,7 +330,7 @@ sqlite3 store/alice.db "SELECT json_extract(capsule, '$.semantics.claims[0].stat
     evidence from Bob, Carol, the phone and the stick (+1.70, weight 36.97).
   - Three problems showed up only on the device and were fixed: frames the device ignored after
     the port was reopened (it now parses from the first `{`); an ACK and a task arriving back to
-    back overflowed its ~260-byte input buffer (it now waits on input instead of sleeping, and the
+    back were lost, most likely overflowing its small input buffer (it now waits on input instead of sleeping, and the
     gateway leaves 50 ms between frames); and new tilt reports replaced a task still waiting (it
     now asks one question at a time).
 
@@ -328,8 +347,8 @@ python tests/test_validator.py      # 13: every rejection code: schema, version,
 python tests/test_interpreter.py    # 13: exact wire round-trip, stable digests, expiry, actionable, merge
 python tests/test_scheduler.py      # 14: routing, ledger, replies, verified outcomes only, opinions survive restart
 python tests/test_network.py        # 6:  peers.json, clock offset, any working directory, session over a network address
-python tests/test_gateway.py        # 10: edge outcome fields, device outcome teaches Alice's rule, rejections, session drop, firmware protocol
-python -m pytest tests              # all 136
+python tests/test_gateway.py        # 13: edge outcome fields, device outcome teaches Alice's rule, rejections, session drop, firmware protocol, sensor lists
+python -m pytest tests              # all 139
 ```
 
 ## What a capsule looks like
@@ -414,6 +433,7 @@ Capsule ─to_wire─► dict ─sign─► envelope ──TCP──► Peer.rec
 | `boot/genesis.py` | A node's first capsule |
 | `boot/discovery.py` | `peers.json` (`host:port` entries), `parse_peer` |
 | `edge/upgrade.py`, `edge/sc_edge.json` | Stripped ESP-NOW wire form (≤16/32/120-char fields) and conversion |
+| `edge/sensors.py`, `edge/sc_sensors.json` | A device's sensor list, checked, into a `__sensors__` capsule |
 | `agents/` | `EchoAgent`, `RelayAgent` |
 | `hal/` | `FileTransport`, `SocketTransport`, `SocketListener` (many peers), `local_addresses`, clock, storage re-export |
 | `leighton_weight_readme.py` | The decay theory, draft |
@@ -484,7 +504,7 @@ your own evidence count and decay clock. Never store it as your opinion.
 
 ### The bad — known limits, by design for now
 
-- **One machine, star topology.** Everything so far ran on localhost. Clients talk only to Alice.
+- **Star topology.** Clients, the phone and the gateway all talk only to Alice.
   There's no relaying between Bob and Carol, and a reply for an agent with no open session is
   stored but not delivered (no queue). Clients don't reconnect mid-session.
 - **One lock for dispatch.** Alice runs the scheduler under a single node lock, so capsules are
@@ -550,8 +570,9 @@ your own evidence count and decay clock. Never store it as your opinion.
 - **Small device buffers.** The stick's serial input buffer is small. The gateway paces frames and
   the firmware reads between screen rows (10 frames sent back to back with no gap all arrived), but
   a long enough burst could still overflow it; a lost task simply never gets an outcome.
-- **Device readings stay on the device.** Accelerometer, gyroscope, temperature and battery are
-  displayed but not reported, so Alice has no opinion about any sensor yet.
+- **Alice knows the sensors, not their readings.** The stick's `__sensors__` capsule reaches Alice,
+  but readings are only displayed, so no `sensor:<id>` opinion exists yet. The margins in it are the
+  firmware's defaults, not an operator's (`__setup__` isn't built).
 - **Trust lives only in the node's database.** Delete `store/<name>.db` and every rule and topic
   opinion starts over at unknown; there's no backup or export of opinions.
 

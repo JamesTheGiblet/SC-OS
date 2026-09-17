@@ -52,6 +52,13 @@ class Talk:
             "s": _clip(statement, 120), "tr": trigger,
         })
 
+    def describe(self, sensors, absent=()):
+        """Send this device's sensor list; the gateway builds the __sensors__ capsule from it."""
+        frame = {"src": self.name, "sensors": list(sensors)}
+        if absent:
+            frame["absent"] = list(absent)
+        self.send_line(json.dumps(frame))
+
     def complete(self, success, detail=""):
         """Report the outcome of the current task. Returns the message id, or None if no task."""
         if self.task is None:
@@ -71,7 +78,8 @@ class Talk:
     def receive_line(self, line):
         """
         Handle one line from the link. Returns what happened:
-        "task", "ack", "refuse", "other", or None for lines that aren't ours.
+        "task", "ack", "refuse", "describe" (the gateway asks for the sensor list),
+        "other", or None for lines that aren't ours.
         """
         start = line.find("{")              # opening the port can leave junk bytes before a frame
         if start < 0:
@@ -81,7 +89,11 @@ class Talk:
             frame = json.loads(line)
         except ValueError:
             return None
-        if not isinstance(frame, dict) or frame.get("dst") != self.name:
+        if not isinstance(frame, dict) or frame.get("dst") not in (self.name, "*"):
+            return None
+        if frame.get("cmd") == "describe":
+            return "describe"
+        if frame.get("dst") != self.name:
             return None
         cap = frame.get("cap") or {}
         if cap.get("tr") == "task" and cap.get("i") == "request":

@@ -5,7 +5,9 @@ ESP-NOW through a gateway radio later) to signed sessions with a master node.
 Link frames are one JSON object per line:
 
     device -> gateway   {"src": "m5-a1b2c3", "cap": <stripped capsule>}
+    device -> gateway   {"src": "m5-a1b2c3", "sensors": [...], "absent": [...]}   (see edge/sensors.py)
     gateway -> device   {"dst": "m5-a1b2c3", "cap": <stripped capsule>}
+    gateway -> device   {"dst": "*", "cmd": "describe"}    (ask any device to send its sensor list)
 
 Each device is its own agent, agent://<src>. The gateway holds that agent's key
 and opens one session to the master per device, so a task reaches the device
@@ -36,6 +38,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
+from edge.sensors import sensors_capsule, validate_sensor_list
 from edge.upgrade import from_edge_wire, to_edge_wire, validate_edge
 from handshake import TOPIC as HELLO_TOPIC, negotiate
 from peer import Node, Peer, PeerRejected
@@ -93,6 +96,8 @@ class EdgeGateway:
 
     def handle_frame(self, frame: dict) -> Capsule:
         """Upgrade one device frame and send it to the master. Raises CapsuleRejected."""
+        if isinstance(frame, dict) and "sensors" in frame:
+            return self._describe(frame)
         if not isinstance(frame, dict) or not isinstance(frame.get("cap"), dict):
             raise CapsuleRejected("edge_frame", "frame must be {\"src\": ..., \"cap\": {...}}")
         src = frame.get("src")
@@ -116,15 +121,28 @@ class EdgeGateway:
                 if device.tasks[cap["re"]][1] < datetime.now(timezone.utc):
                     raise CapsuleRejected("edge_unknown_task", f"task re={cap['re']!r} has expired")
             c = from_edge_wire(cap, sender=device.agent, receiver=self.master, derived_from=derived)
-            peer = self._session(device)
-            try:
-                peer.send(c)
-            except (OSError, ConnectionError):
-                self._drop(device, "send failed; retrying on a new session")
-                self._session(device).send(c)
+            self._send(device, c)
             _remember(device.seen, cap["id"], True)
             _remember(device.edge_ids, c.id, cap["id"])
         return c
+
+    def _describe(self, frame: dict) -> Capsule:
+        """A device's sensor list becomes a __sensors__ capsule, sent as the device's agent."""
+        validate_sensor_list(frame)
+        device = self._device(frame["src"])
+        c = sensors_capsule(frame, sender=device.agent, receiver=self.master)
+        with device.lock:
+            self._send(device, c)
+        return c
+
+    def _send(self, device: Device, c: Capsule) -> None:
+        """Send on the device's session, opening one if needed; retry once on a fresh session."""
+        peer = self._session(device)
+        try:
+            peer.send(c)
+        except (OSError, ConnectionError):
+            self._drop(device, "send failed; retrying on a new session")
+            self._session(device).send(c)
 
     # --- master -> device ---
 
