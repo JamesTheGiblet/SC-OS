@@ -9,7 +9,7 @@ The "OS" is the kernel that routes capsules between agents; the capsule protocol
 handles several peers at once over TCP, with signed capsules, pinned keys, replay protection and a
 SQLite ledger. Rules are capsules too: they fire on incoming capsules and gain or lose trust from
 reported outcomes. SC-OS also records its own code, docs and test results as capsules. Tested with three nodes on
-one machine, including over its network address rather than loopback; it hasn't crossed two machines yet.
+one machine and across two: a Windows PC and an Android phone (Termux) over Wi-Fi.
 Read [the good, the bad, and the ugly](#the-good-the-bad-and-the-ugly) before building on it.
 
 ## Why capsules
@@ -160,7 +160,7 @@ python run_bob.py --host 192.168.1.20
 #   {"peers": ["192.168.1.20:7707"]}
 ```
 
-Both sides log a warning if the other's clock is more than 5 s off. Capsules created more than
+Both sides log the other's clock offset on every hello, with a warning above 5 s. Capsules created more than
 30 s in the receiver's future are rejected, so sync clocks (NTP) before blaming the network.
 First contact pins each side's key; a machine that regenerates its key (a new `keys/` directory)
 is rejected until the other side deletes that pin.
@@ -199,6 +199,23 @@ sqlite3 store/alice.db "SELECT json_extract(capsule, '$.semantics.claims[0].stat
 - **Replay:** Carol resent a byte-identical signed capsule, and Alice rejected it
   (`replay: capsule … was already received`) and closed that session. A capsule Bob sent before
   the SQLite migration was also rejected when replayed against the migrated ledger.
+- **Two machines (2026-09-17):** Alice on a Windows 11 PC (`--host 0.0.0.0`), `agent://phone` on an
+  Android phone in Termux, over the phone's Wi-Fi hotspot. Round trips took 15–34 ms. The phone's clock
+  ran about 1.0–1.2 s behind the PC's, shown in Alice's "since created" times (the phone measured
+  its own cycles at 15–34 ms).
+  - First contact pinned both keys; every later run from the phone matched its pin.
+  - A byte-identical replay from the phone was rejected and the session closed.
+  - Success moved the topic opinion and rule up by 0.1; failure moved both down by 0.2 and added
+    weight 3, as the model says.
+  - Ctrl+C on the phone mid-session: Alice logged the disconnect at once, and the phone reconnected
+    straight away.
+  - Airplane mode mid-session (no close sent): Alice logged `connection error: timed out` about 30 s
+    later and kept serving. The phone reconnected after Alice was restarted, so reconnecting inside
+    the same Alice process after a silent drop wasn't directly observed.
+  - The phone and a PC client (`agent://bob`) had open sessions at the same time; Bob's whole
+    session ran while the phone's was waiting, and each got its own ACK and task.
+  - Rule trust and topic opinions survived an Alice restart and kept learning (rule at +1.50,
+    weight 19.97, 13 outcomes).
 
 ### Tests
 
@@ -390,9 +407,9 @@ your own evidence count and decay clock. Never store it as your opinion.
   opinion, and the scheduler never calls `blend`.
 - **Stubs.** `_escalate` and `_handle_threshold` just ACK (rules can act on those capsules instead).
   `RelayAgent` and `hal/clock.py` are unused.
-- **No test runs across two machines.** Tests and runs used one machine, once over its network
-  address instead of loopback. Real latency, packet loss, NAT and Windows/Linux differences are
-  untested. The run scripts and `EchoAgent` have no asserting tests beyond the network checks.
+- **Two machines, one network, by hand.** PC ↔ phone was checked by hand on a single hotspot:
+  no NAT, no routing between networks, no lossy links. No automated test spans two machines, and
+  the run scripts and `EchoAgent` have no asserting tests beyond the network checks.
 - **The self-description stays home and must be refreshed.** `self.*` capsules live only in
   `store/self.db`; no node sends them to peers. They expire after 7 days, and nothing reruns
   `self_describe.py` automatically.
@@ -425,8 +442,8 @@ your own evidence count and decay clock. Never store it as your opinion.
 ## Roadmap
 
 1. ~~Fix `SocketTransport` framing.~~ Done.
-2. ~~Two-process test.~~ ~~Three nodes.~~ Done on one machine. **Next: two machines** (scripts
-   ready: `--host 0.0.0.0`, `peers.json`, clock warnings; see [Two machines](#two-machines)).
+2. ~~Two-process test.~~ ~~Three nodes.~~ ~~Two machines~~ (PC ↔ phone, see
+   [Two machines](#two-machines)). Next: networks with NAT, and reconnecting clients.
 3. Identity binding: ~~trust on first use~~ done; key registry or root of trust, key rotation.
 4. ~~Replay protection.~~ Done.
 5. ~~SQLite ledger.~~ Done. Next: prune on a schedule.

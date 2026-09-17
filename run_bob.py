@@ -104,8 +104,9 @@ def main() -> int:
             return 1
         agreed = negotiate(local_hello, remote_hello)
         pin = "first contact, key pinned" if peer.last_pin == "new" else "key matches pin"
-        log(f"hello from {ALICE}, {pin}; agreed capsule_version={agreed['capsule_version']}")
         offset = clock_offset(remote_hello)
+        log(f"hello from {ALICE}, {pin}; agreed capsule_version={agreed['capsule_version']}; "
+            f"clock offset {offset:+.1f} s")
         if abs(offset) > CLOCK_WARN_SECONDS:
             log(f"WARNING Alice's clock is {abs(offset):.1f} s {'ahead of' if offset > 0 else 'behind'} "
                 f"ours; capsules more than 30 s in the future are rejected")
@@ -202,6 +203,9 @@ def main() -> int:
     except ConnectionError as e:
         log(f"FAIL {ALICE} closed the connection ({e}); check her log, she may have rejected us")
         return 1
+    except KeyboardInterrupt:
+        log("interrupted; connection closed")
+        return 130
     finally:
         transport.close()
     return 0

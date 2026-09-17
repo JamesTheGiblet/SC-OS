@@ -159,10 +159,8 @@ Each decision was made against the code as it stood; revisit only with a reason.
 
 ## Next
 
-1. **Two machines.** Scripts are ready (`--host 0.0.0.0`, `peers.json`, clock-offset warnings,
-   node files found from the project root) and a session over this machine's network address
-   passes. Still to do: an actual second machine, laptop ↔ phone. Expect firewalls, NAT, real
-   disconnects and Windows/Linux differences.
+1. **Build order step 4: one ESP32 → gateway → master.** PC ↔ phone (step 3) passed on
+   2026-09-17. Still open from step 3: NAT and reconnecting within one server process after a silent drop.
 2. **Make `hal/` an interface.** Protocols for transport, clock and a sensor bus; move
    implementations out; a simulated sensor bus for the laptop.
 3. **Bootstrap:** signed, stored genesis, then `__hardware__`, `__setup__`, `__sensors__`.

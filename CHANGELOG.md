@@ -21,6 +21,12 @@ across a process boundary.
   the scripts, not in the working directory. Verified: Alice on `0.0.0.0`, Bob and Carol started
   from another directory, connecting over the machine's network address; both matched their pins,
   and the rule and topic opinion learned from their outcomes.
+- **Verified across two machines** (2026-09-17): Alice on a Windows PC, `agent://phone` on an
+  Android phone in Termux, over Wi-Fi. Covered: first-contact pinning, pin matches on restart,
+  replay rejection, success and failure outcomes, client killed mid-session, silent network drop
+  (Alice timed out after 30 s and kept serving), overlapping sessions from the phone and the PC,
+  and trust surviving an Alice restart. The phone's clock was about 1 s behind the PC's.
+- Both run scripts log the peer's clock offset on every hello. `run_bob.py` exits quietly on Ctrl+C.
 - **Asserting tests for the kernel and the law.** `tests/test_weight.py` (14, was a print script),
   `tests/test_validator.py` (13), `tests/test_interpreter.py` (13, including merge),
   `tests/test_scheduler.py` (14), `tests/test_network.py` (6). 126 tests in all.
@@ -184,7 +190,7 @@ across a process boundary.
 - Only ever run on one machine, in a star; no relaying, no queue for offline agents.
 - Trust on first use trusts whoever arrives first; no registry, no key rotation.
 - SQLite files are ~1.3× the old JSON Lines size, and nothing prunes on a schedule.
-- Two machines are ready but untested: every run so far was on one machine.
+- Two machines checked by hand on one Wi-Fi hotspot only: no NAT, no lossy links, no automated test.
 - The self-description isn't shared with peers, expires after 7 days, and nothing reruns it.
 - A reported outcome is the worker's word; nothing checks it's true.
 - Rules don't chain.

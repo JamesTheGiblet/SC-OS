@@ -88,9 +88,9 @@ class Server:
             pin = "first contact, key pinned" if peer.last_pin == "new" else "key matches pin"
             local_hello = self.node.hello(remote)
             agreed = negotiate(local_hello, hello)
-            log(f"[{remote}] hello from {tag}, {pin}; agreed capsule_version="
-                f"{agreed['capsule_version']} vocab={agreed['vocab_version']}")
             offset = clock_offset(hello)
+            log(f"[{remote}] hello from {tag}, {pin}; agreed capsule_version="
+                f"{agreed['capsule_version']} vocab={agreed['vocab_version']}; clock offset {offset:+.1f} s")
             if abs(offset) > CLOCK_WARN_SECONDS:
                 log(f"[{remote}] WARNING clock is {abs(offset):.1f} s {'ahead of' if offset > 0 else 'behind'} "
                     f"ours; capsules more than 30 s in the future are rejected")
@@ -99,7 +99,7 @@ class Server:
             while True:
                 c = peer.recv()
                 age = (datetime.now(timezone.utc) - c.created).total_seconds()
-                log(f"[{remote}] recv verified ({age * 1000:.1f} ms since created): "
+                log(f"[{remote}] recv verified ({age * 1000:.1f} ms since created, by its clock): "
                     f"{render(c).splitlines()[0]}")
                 with self.node.lock:          # one shared scheduler, one ledger
                     learned_before = len(self.sched.learned)
