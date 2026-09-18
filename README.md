@@ -431,7 +431,7 @@ sqlite3 store/alice.db "SELECT json_extract(capsule, '$.semantics.claims[0].stat
 python tests/test_store.py          # 15: round-trip, signatures, find, pruning and disk space, import, concurrent writers
 python tests/test_transport.py      # 9:  framing, many peers at once, concurrent sends (real localhost TCP)
 python tests/test_peer.py           # 17: pinning, rejections, replay, session binding, concurrent sessions
-python tests/test_rules.py          # 32: patterns, firing and provenance, own rules only, outcomes, lifetime, families and arbitration
+python tests/test_rules.py          # 32: patterns, firing, own rules only, outcomes, lifetime, families, arbitration, chaining, shared credit
 python tests/test_self_describe.py  # 6:  valid capsules, every file described, versions chain, rerun stores nothing
 python tests/test_weight.py         # 14: the curve, success/failure/idle trajectories, stepwise ticks, sharing rule, domains
 python tests/test_validator.py      # 13: every rejection code: schema, version, clock skew, vocab, coherence, provenance, outcome
